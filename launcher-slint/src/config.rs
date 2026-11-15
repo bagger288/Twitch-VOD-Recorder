@@ -11,6 +11,9 @@ pub struct AppConfig {
     #[serde(default = "default_mpv")]
     pub mpv_path: String,
 
+    #[serde(default = "default_ffmpeg")]
+    pub ffmpeg_path: String,
+
     #[serde(default = "default_true")]
     pub default_chat_enabled: bool,
 
@@ -107,6 +110,7 @@ pub struct AppConfig {
 
 fn default_streamlink() -> String { "streamlink".to_string() }
 fn default_mpv() -> String { "mpv".to_string() }
+fn default_ffmpeg() -> String { "ffmpeg".to_string() }
 fn default_records_dir() -> String { "records".to_string() }
 fn default_emote_cache_dir() -> String { "emote_cache".to_string() }
 fn default_chat_engine() -> String { "Auto".to_string() }
@@ -117,6 +121,7 @@ impl Default for AppConfig {
         Self {
             streamlink_path: default_streamlink(),
             mpv_path: default_mpv(),
+            ffmpeg_path: default_ffmpeg(),
             default_chat_enabled: true,
             default_emotes_enabled: true,
             default_offset_ms: 0,

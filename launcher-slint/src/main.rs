@@ -137,7 +137,7 @@ fn copy_to_clipboard(text: &str) {
     }
 }
 
-fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str) {
+fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str, ffmpeg_path: &str) {
     // 1. Streamlink
     let p_sl = Path::new(sl_path);
     let bin_sl = if p_sl.is_file() { sl_path } else if sl_path.trim().is_empty() { "streamlink" } else { sl_path };
@@ -194,7 +194,9 @@ fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str) {
     }
 
     // 3. FFmpeg
-    let mut cmd_ff = std::process::Command::new("ffmpeg");
+    let p_ff = Path::new(ffmpeg_path);
+    let bin_ff = if p_ff.is_file() { ffmpeg_path } else if ffmpeg_path.trim().is_empty() { "ffmpeg" } else { ffmpeg_path };
+    let mut cmd_ff = std::process::Command::new(bin_ff);
     cmd_ff.arg("-version");
     #[cfg(windows)]
     {
@@ -203,7 +205,7 @@ fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str) {
     }
     match cmd_ff.output() {
         Ok(out) if out.status.success() => {
-            let mut nv_cmd = std::process::Command::new("ffmpeg");
+            let mut nv_cmd = std::process::Command::new(bin_ff);
             nv_cmd.args(["-y", "-f", "lavfi", "-i", "color=c=black:s=256x256:d=0.1", "-c:v", "h264_nvenc", "-f", "null", "-"]);
             #[cfg(windows)]
             {
@@ -221,8 +223,13 @@ fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str) {
             ui.set_status_ffmpeg("✓ FFmpeg доступен (Стандартное кодирование CPU)".into());
         }
         _ => {
-            ui.set_valid_ffmpeg(false);
-            ui.set_status_ffmpeg("✗ FFmpeg не найден в PATH (нужен для экспорта клипов)".into());
+            if p_ff.is_file() {
+                ui.set_valid_ffmpeg(true);
+                ui.set_status_ffmpeg("✓ Файл FFmpeg существует".into());
+            } else {
+                ui.set_valid_ffmpeg(false);
+                ui.set_status_ffmpeg("✗ FFmpeg не найден по указанному пути (нужен для экспорта клипов)".into());
+            }
         }
     }
 }
@@ -402,6 +409,7 @@ fn main() -> Result<(), slint::PlatformError> {
         let cfg = config_arc.lock().unwrap();
         main_window.set_cfg_streamlink(cfg.streamlink_path.clone().into());
         main_window.set_cfg_mpv(cfg.mpv_path.clone().into());
+        main_window.set_cfg_ffmpeg(cfg.ffmpeg_path.clone().into());
         main_window.set_cfg_client_id(cfg.twitch_client_id.clone().into());
         main_window.set_cfg_app_token(cfg.twitch_app_token.clone().into());
         main_window.set_cfg_client_secret(cfg.twitch_client_secret.clone().into());
@@ -410,7 +418,7 @@ fn main() -> Result<(), slint::PlatformError> {
         main_window.set_cfg_server_url(cfg.server_url.clone().into());
         main_window.set_cfg_proxy_playlist(cfg.twitch_proxy_playlist.clone().into());
         main_window.set_cfg_engine(cfg.chat_engine.clone().into());
-        check_tool_paths(&main_window, &cfg.streamlink_path, &cfg.mpv_path);
+        check_tool_paths(&main_window, &cfg.streamlink_path, &cfg.mpv_path, &cfg.ffmpeg_path);
     }
 
     {
@@ -419,7 +427,8 @@ fn main() -> Result<(), slint::PlatformError> {
             if let Some(ui) = handle_check.upgrade() {
                 let sl = ui.get_cfg_streamlink().to_string();
                 let mpv = ui.get_cfg_mpv().to_string();
-                check_tool_paths(&ui, &sl, &mpv);
+                let ff = ui.get_cfg_ffmpeg().to_string();
+                check_tool_paths(&ui, &sl, &mpv, &ff);
             }
         });
     }
@@ -752,6 +761,7 @@ fn main() -> Result<(), slint::PlatformError> {
                 let mut cfg = cfg_arc.lock().unwrap();
                 cfg.streamlink_path = ui.get_cfg_streamlink().to_string();
                 cfg.mpv_path = ui.get_cfg_mpv().to_string();
+                cfg.ffmpeg_path = ui.get_cfg_ffmpeg().to_string();
                 cfg.twitch_client_id = ui.get_cfg_client_id().to_string();
                 cfg.twitch_app_token = ui.get_cfg_app_token().to_string();
                 cfg.twitch_client_secret = ui.get_cfg_client_secret().to_string();
@@ -766,7 +776,8 @@ fn main() -> Result<(), slint::PlatformError> {
 
                 let sl = ui.get_cfg_streamlink().to_string();
                 let mpv = ui.get_cfg_mpv().to_string();
-                check_tool_paths(&ui, &sl, &mpv);
+                let ff = ui.get_cfg_ffmpeg().to_string();
+                check_tool_paths(&ui, &sl, &mpv, &ff);
                 refresh_fn();
             }
         });

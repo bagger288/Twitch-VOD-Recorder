@@ -137,13 +137,13 @@ component StatusPill inherits Rectangle {
     width: 34px;
     height: 20px;
     border-radius: 10px;
-    background: root.active ? #133323 : #222229;
+    background: root.active ? #1e5c3d : #2b2b35;
     border-width: 1px;
-    border-color: root.active ? #1f573b : #30303a;
+    border-color: root.active ? #2f8c5e : #3d3d4a;
 
     Text {
         text: root.active ? "✓" : "—";
-        color: root.active ? #00e676 : #686876;
+        color: root.active ? #4ade80 : #8e8e9e;
         font-size: 8.5pt;
         font-weight: 700;
         horizontal-alignment: center;
@@ -336,6 +336,7 @@ export component MainWindow inherits Window {
     // Tab 5 Settings properties
     in-out property <string> cfg_streamlink: "streamlink";
     in-out property <string> cfg_mpv: "mpv";
+    in-out property <string> cfg_ffmpeg: "ffmpeg";
     in-out property <string> cfg_client_id: "";
     in-out property <string> cfg_app_token: "";
     in-out property <string> cfg_client_secret: "";
@@ -372,12 +373,15 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Tab Navigation Buttons with Live Process Indicators
+        // Tab Navigation Buttons with Live Process Indicators (fixed equal widths)
         HorizontalLayout {
             spacing: 4px;
             height: 34px;
 
             for tab_title[i] in ["Записи", "Импорт", "Запись", "PC Agent", "Настройки"]: Rectangle {
+                horizontal-stretch: 1;
+                min-width: 0px;
+                preferred-width: 0px;
                 background: root.active_tab == i ? root.c_accent : (tab_touch.has-hover ? #282830 : root.c_card);
                 border-radius: 5px;
                 border-width: root.active_tab == i ? 0px : 1px;
@@ -392,26 +396,24 @@ export component MainWindow inherits Window {
                     }
                 }
 
-                HorizontalLayout {
-                    alignment: center;
-                    spacing: 6px;
+                Text {
+                    width: 100%;
+                    height: 100%;
+                    text: tab_title;
+                    color: root.active_tab == i ? #ffffff : root.c_text;
+                    font-size: 10pt;
+                    font-weight: root.active_tab == i ? 700 : 500;
+                    horizontal-alignment: center;
+                    vertical-alignment: center;
+                }
 
-                    if (i == 1 && root.imp_busy) || (i == 2 && root.rec_active) || (i == 3 && root.agent_active): Rectangle {
-                        width: 8px;
-                        height: 8px;
-                        y: (parent.height - self.height) / 2;
-                        border-radius: 4px;
-                        background: i == 1 ? #ffb300 : (i == 2 ? #ff4b4b : (root.agent_recording_now ? #ff4b4b : #00e676));
-                    }
-
-                    Text {
-                        text: tab_title;
-                        color: root.active_tab == i ? #ffffff : root.c_text;
-                        font-size: 10pt;
-                        font-weight: root.active_tab == i ? 700 : 500;
-                        horizontal-alignment: center;
-                        vertical-alignment: center;
-                    }
+                if (i == 1 && root.imp_busy) || (i == 2 && root.rec_active) || (i == 3 && root.agent_active): Rectangle {
+                    x: 10px;
+                    y: (parent.height - self.height) / 2;
+                    width: 8px;
+                    height: 8px;
+                    border-radius: 4px;
+                    background: i == 1 ? #ffb300 : (i == 2 ? #ff4b4b : (root.agent_recording_now ? #ff4b4b : #00e676));
                 }
             }
         }
@@ -1082,7 +1084,8 @@ export component MainWindow inherits Window {
                                     font-weight: 700;
                                 }
 
-                                Text { text: "Статус FFmpeg (для экспорта клипов):"; font-size: 9pt; color: root.c_text_dim; }
+                                Text { text: "Путь к FFmpeg (для экспорта клипов):"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_ffmpeg; }
                                 if root.status_ffmpeg != "": Text {
                                     text: root.status_ffmpeg;
                                     color: root.valid_ffmpeg ? #00e676 : #ffb300;
@@ -1144,7 +1147,7 @@ export component MainWindow inherits Window {
                                 spacing: 6px;
 
                                 Text {
-                                    text: "Сеть, папки и движок";
+                                    text: "Сеть и папки";
                                     font-size: 10.5pt;
                                     font-weight: 700;
                                     color: root.c_title;
@@ -1158,13 +1161,6 @@ export component MainWindow inherits Window {
 
                                 Text { text: "Twitch Proxy Playlist (--twitch-proxy-playlist):"; font-size: 9pt; color: root.c_text_dim; }
                                 AppInput { text <=> root.cfg_proxy_playlist; placeholder-text: "прокси через запятую"; }
-
-                                HorizontalLayout {
-                                    spacing: 8px;
-                                    padding-top: 4px;
-                                    Text { text: "Движок чата: Rust (twitch_chat.dll)"; color: #a3be8c; font-weight: 700; font-size: 9pt; vertical-alignment: center; }
-                                    Rectangle { }
-                                }
                             }
                         }
                     }

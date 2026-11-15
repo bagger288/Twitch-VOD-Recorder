@@ -77,6 +77,7 @@ pub fn run_render_chat(args: &[String]) -> Result<(), String> {
         .ok_or_else(|| format!("Failed to load session from: {}", session_path))?;
 
     let mut ui = UiState::default();
+    let mut ffmpeg_bin = String::from("ffmpeg");
 
     // Look for global config.json first, then fallback to session chat_settings.json
     let config_candidates = [
@@ -90,6 +91,12 @@ pub fn run_render_chat(args: &[String]) -> Result<(), String> {
         if cfg_path.is_file() {
             if let Ok(settings_str) = fs::read_to_string(cfg_path) {
                 if let Ok(val) = serde_json::from_str::<serde_json::Value>(&settings_str) {
+                    if let Some(ff) = val.get("ffmpeg_path").and_then(|v| v.as_str()) {
+                        let trimmed = ff.trim();
+                        if !trimmed.is_empty() {
+                            ffmpeg_bin = trimmed.to_string();
+                        }
+                    }
                     if ui.apply_settings_json(&val) {
                         break;
                     }
@@ -109,7 +116,7 @@ pub fn run_render_chat(args: &[String]) -> Result<(), String> {
 
     let total_frames = ((duration_sec * fps).ceil() as usize).max(1);
 
-    let mut ffmpeg = Command::new("ffmpeg")
+    let mut ffmpeg = Command::new(&ffmpeg_bin)
         .args([
             "-nostdin",
             "-y",
