@@ -51,12 +51,6 @@ jobs:
           workspaces: |
             ${{ steps.proj.outputs.crate_dir }} -> ${{ steps.proj.outputs.target_dir }}
 
-      - name: Check Code Syntax & Types
-        shell: pwsh
-        run: |
-          Set-Location "${{ steps.proj.outputs.crate_dir }}"
-          cargo check --workspace --verbose
-
       - name: Run Workspace Tests
         shell: pwsh
         run: |
