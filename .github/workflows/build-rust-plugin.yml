@@ -1,0 +1,142 @@
+name: Build Twitch mpv Overlay & Launcher (Windows x64)
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+  workflow_dispatch:
+    inputs:
+      build_profile:
+        description: 'Build profile'
+        required: true
+        default: 'release'
+        type: choice
+        options:
+          - release
+          - debug
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build-windows:
+    name: Build twitch_chat.dll & twitch_launcher.exe (Windows MSVC x64)
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Detect Project Root
+        id: proj
+        shell: pwsh
+        run: |
+          if (Test-Path "Cargo.toml") {
+            Write-Host "Found Cargo.toml in repository root"
+            "crate_dir=." >> $env:GITHUB_OUTPUT
+            "target_dir=target" >> $env:GITHUB_OUTPUT
+          } else {
+            Write-Error "Could not locate Cargo.toml in repository root"
+            exit 1
+          }
+
+      - name: Cache Cargo Dependencies & Build Artifacts
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            ${{ steps.proj.outputs.crate_dir }} -> ${{ steps.proj.outputs.target_dir }}
+
+      - name: Check Code Syntax & Types
+        shell: pwsh
+        run: |
+          Set-Location "${{ steps.proj.outputs.crate_dir }}"
+          cargo check --workspace --verbose
+
+      - name: Run Workspace Tests
+        shell: pwsh
+        run: |
+          Set-Location "${{ steps.proj.outputs.crate_dir }}"
+          cargo test --workspace --verbose
+
+      - name: Build Workspace (Release)
+        if: "${{ github.event.inputs.build_profile != 'debug' }}"
+        shell: pwsh
+        run: |
+          Set-Location "${{ steps.proj.outputs.crate_dir }}"
+          cargo build --release --workspace --verbose
+
+      - name: Build Workspace (Debug)
+        if: "${{ github.event.inputs.build_profile == 'debug' }}"
+        shell: pwsh
+        run: |
+          Set-Location "${{ steps.proj.outputs.crate_dir }}"
+          cargo build --workspace --verbose
+
+      - name: Locate & Verify Binaries Generation
+        id: verify
+        shell: pwsh
+        run: |
+          $profile = "${{ github.event.inputs.build_profile }}"
+          if ([string]::IsNullOrWhiteSpace($profile)) { $profile = "release" }
+          
+          $targetBase = "${{ steps.proj.outputs.target_dir }}"
+          $dllCandidate = Join-Path $targetBase "$profile\twitch_chat.dll"
+          $exeCandidate = Join-Path $targetBase "$profile\twitch_launcher.exe"
+          
+          if (-not (Test-Path $dllCandidate)) {
+            Write-Error "twitch_chat.dll not found at expected path: $dllCandidate"
+            exit 1
+          }
+          if (-not (Test-Path $exeCandidate)) {
+            Write-Error "twitch_launcher.exe not found at expected path: $exeCandidate"
+            exit 1
+          }
+          
+          Write-Host "Successfully generated: $dllCandidate"
+          Get-Item $dllCandidate | Select-Object Name, Length, LastWriteTime
+          Write-Host "Successfully generated: $exeCandidate"
+          Get-Item $exeCandidate | Select-Object Name, Length, LastWriteTime
+
+          "dll_path=$dllCandidate" >> $env:GITHUB_OUTPUT
+          "exe_path=$exeCandidate" >> $env:GITHUB_OUTPUT
+          "out_dir=$(Split-Path -Parent $dllCandidate)" >> $env:GITHUB_OUTPUT
+
+      - name: Upload twitch_launcher.exe Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: twitch_launcher-windows-x64
+          path: |
+            ${{ steps.verify.outputs.out_dir }}/twitch_launcher.exe
+            ${{ steps.verify.outputs.out_dir }}/twitch_launcher.pdb
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload twitch_chat.dll Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: twitch_chat-windows-x64
+          path: |
+            ${{ steps.verify.outputs.out_dir }}/twitch_chat.dll
+            ${{ steps.verify.outputs.out_dir }}/twitch_chat.pdb
+            twitch_chat_input.lua
+            assets/INTER-LICENSE.txt
+          if-no-files-found: error
+          retention-days: 90
+
+      - name: Upload Combined Bundle Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: twitch-bundle-windows-x64
+          path: |
+            ${{ steps.verify.outputs.out_dir }}/twitch_launcher.exe
+            ${{ steps.verify.outputs.out_dir }}/twitch_chat.dll
+            twitch_chat_input.lua
+            README.md
+            assets/INTER-LICENSE.txt
+          if-no-files-found: error
+          retention-days: 90
