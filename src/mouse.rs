@@ -55,7 +55,7 @@ impl PanelMouse {
                     return MouseAction::None;
                 }
                 self.pressed_at = Some((mx, my));
-                if ui.minimized || ChatRenderer::is_drag_handle(x, y, ui.panel_width as f32) {
+                if ui.minimized || ChatRenderer::is_drag_handle(x, y, ui.effective_panel_size().0 as f32) {
                     self.drag = Some(DragOrigin {
                         cursor: (mx, my),
                         panel: (panel_x, panel_y),

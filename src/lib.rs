@@ -406,6 +406,16 @@ impl PluginState {
                 }
             }
         }
+
+        self.sync_overlay_to_osd();
+    }
+
+    fn sync_overlay_to_osd(&mut self) -> bool {
+        let Some(osd_w) = self.mpv.get_property_double("osd-width") else { return false; };
+        let Some(osd_h) = self.mpv.get_property_double("osd-height") else { return false; };
+        let w = osd_w.round() as i32;
+        let h = osd_h.round() as i32;
+        self.ui.apply_osd_bounds(w, h)
     }
 
     fn save_chat_settings(&self) {
@@ -424,6 +434,10 @@ impl PluginState {
 
         map.insert("chat_x".to_string(), serde_json::json!(self.ui.panel_x));
         map.insert("chat_y".to_string(), serde_json::json!(self.ui.panel_y));
+        if let Some((rx, ry)) = self.ui.rel_pos {
+            map.insert("chat_rel_x".to_string(), serde_json::json!(rx));
+            map.insert("chat_rel_y".to_string(), serde_json::json!(ry));
+        }
         map.insert("chat_width".to_string(), serde_json::json!(self.ui.panel_width));
         map.insert("chat_height".to_string(), serde_json::json!(self.ui.panel_height));
         map.insert("chat_font_size".to_string(), serde_json::json!(self.ui.font_size));
@@ -435,6 +449,9 @@ impl PluginState {
         map.insert("chat_text_effect".to_string(), serde_json::json!(self.ui.text_effect));
         map.insert("chat_outline_width".to_string(), serde_json::json!(self.ui.outline_width));
         map.insert("chat_minimized_position".to_string(), serde_json::json!(self.ui.minimized_position));
+        if let Some((mrx, mry)) = self.ui.minimized_rel_pos {
+            map.insert("chat_minimized_rel_position".to_string(), serde_json::json!([mrx, mry]));
+        }
 
         if let Ok(json_str) = serde_json::to_string_pretty(&serde_json::Value::Object(map)) {
             let tmp_path = config_path.with_extension("json.tmp");
@@ -496,7 +513,7 @@ impl PluginState {
             if let Some((x, y)) = self.mouse.drag_position(cursor, (osd_w, osd_h)) {
                 let (old_x, old_y, _, _) = self.ui.overlay_geometry();
                 if x != old_x || y != old_y {
-                    self.ui.set_overlay_position(x, y);
+                    self.ui.set_overlay_position_in_osd(x, y, (osd_w, osd_h));
                     self.update_frame();
                 }
             }
@@ -637,10 +654,11 @@ impl PluginState {
         let rel_x = (mx - self.ui.panel_x) as f32;
         let rel_y = (my - self.ui.panel_y) as f32;
 
+        let (eff_w, eff_h) = self.ui.effective_panel_size();
         if rel_x < -15.0
-            || rel_x > (self.ui.panel_width as f32 + 15.0)
+            || rel_x > (eff_w as f32 + 15.0)
             || rel_y < -15.0
-            || rel_y > (self.ui.panel_height as f32 + 15.0)
+            || rel_y > (eff_h as f32 + 15.0)
         {
             if self.mouse_section_enabled && !self.mouse.is_pressed() {
                 self.mpv.command(&["disable-section", "twitch_chat_mouse"]);
@@ -649,7 +667,7 @@ impl PluginState {
             return;
         }
 
-        let width = self.ui.panel_width as f32;
+        let width = eff_w as f32;
 
         // 1. Header Tabs & Buttons
         if ChatRenderer::btn_tab_chat().contains(rel_x, rel_y) {
@@ -677,6 +695,7 @@ impl PluginState {
                 self.mpv.get_property_double("osd-height").unwrap_or(1080.0) as i32,
             );
             self.ui.minimize(osd);
+            self.ui.apply_osd_bounds(osd.0, osd.1);
             self.header_fade.hovered = false;
             self.save_chat_settings();
             self.update_search_keys_state();
@@ -693,7 +712,7 @@ impl PluginState {
         // 2. View specific clicks
         match self.ui.current_view {
             UiView::Chat => {
-                let height = self.ui.panel_height as f32;
+                let height = eff_h as f32;
                 // If scrolled (into history or future), clicking bottom banner returns to live
                 if (self.ui.scroll_offset != 0 || self.ui.chat_scroll_anchor.is_some()) && rel_y >= height - 32.0 {
                     self.ui.scroll_offset = 0;
@@ -729,7 +748,7 @@ impl PluginState {
                     active_msgs,
                     &session.emotes_manifest,
                     emotes_ref,
-                    self.ui.panel_width as f32,
+                    eff_w as f32,
                     self.ui.font_size,
                     self.ui.emotes_enabled,
                     self.ui.badges_enabled,
@@ -767,17 +786,18 @@ impl PluginState {
     }
 
     fn handle_settings_click(&mut self, rx: f32, ry: f32) {
-        if ry < 32.0 || ry >= self.ui.panel_height as f32 {
+        let (eff_w, eff_h) = self.ui.effective_panel_size();
+        if ry < 32.0 || ry >= eff_h as f32 {
             return;
         }
-        let ry = ry + self.ui.settings_scroll_offset.min(max_settings_scroll(self.ui.panel_height));
-        if ChatRenderer::btn_zebra(self.ui.panel_width as f32).contains(rx, ry) {
+        let ry = ry + self.ui.settings_scroll_offset.min(max_settings_scroll(eff_h));
+        if ChatRenderer::btn_zebra(eff_w as f32).contains(rx, ry) {
             self.ui.zebra_striping = !self.ui.zebra_striping;
             self.save_chat_settings();
             self.update_frame();
             return;
         }
-        if ChatRenderer::btn_text_effect(self.ui.panel_width as f32).contains(rx, ry) {
+        if ChatRenderer::btn_text_effect(eff_w as f32).contains(rx, ry) {
             self.ui.text_effect = self.ui.text_effect.next();
             self.save_chat_settings();
             self.update_frame();
@@ -791,7 +811,7 @@ impl PluginState {
                 return;
             }
         }
-        let width = self.ui.panel_width as f32;
+        let width = eff_w as f32;
         let mut cur_y = 36.0 + 24.0; // after title
 
         // Row 1: Reset offset
@@ -839,12 +859,14 @@ impl PluginState {
         // Panel Width: [W-] (230, cur_y, 28, 22), [W+] (262, cur_y, 28, 22)
         if HitBox::new(230.0, cur_y, 28.0, 22.0).contains(rx, ry) {
             self.ui.panel_width = (self.ui.panel_width.saturating_sub(40)).max(260);
+            self.sync_overlay_to_osd();
             self.save_chat_settings();
             self.update_frame();
             return;
         }
         if HitBox::new(262.0, cur_y, 28.0, 22.0).contains(rx, ry) {
             self.ui.panel_width = (self.ui.panel_width + 40).min(1200);
+            self.sync_overlay_to_osd();
             self.save_chat_settings();
             self.update_frame();
             return;
@@ -854,12 +876,14 @@ impl PluginState {
         // Row 3: Panel Height: [H-] (65, cur_y, 28, 22), [H+] (98, cur_y, 28, 22)
         if HitBox::new(65.0, cur_y, 28.0, 22.0).contains(rx, ry) {
             self.ui.panel_height = (self.ui.panel_height.saturating_sub(40)).max(220);
+            self.sync_overlay_to_osd();
             self.save_chat_settings();
             self.update_frame();
             return;
         }
         if HitBox::new(98.0, cur_y, 28.0, 22.0).contains(rx, ry) {
             self.ui.panel_height = (self.ui.panel_height + 40).min(1400);
+            self.sync_overlay_to_osd();
             self.save_chat_settings();
             self.update_frame();
             return;
@@ -1101,7 +1125,8 @@ impl PluginState {
         let Some(scene) = self.chat_scene.as_mut() else { return; };
         let frame = self.renderer.render_scene(scene, cache, cache.elapsed(), force);
         if let Some(data) = frame.pixels {
-            let ret = self.mpv.overlay_add_bgra(OVERLAY_ID, self.ui.panel_x, self.ui.panel_y, &data, self.ui.panel_width, self.ui.panel_height, self.ui.panel_width * 4);
+            let (pw, ph) = self.ui.effective_panel_size();
+            let ret = self.mpv.overlay_add_bgra(OVERLAY_ID, self.ui.panel_x, self.ui.panel_y, &data, pw, ph, pw * 4);
             if ret >= 0 { self.overlay_active = true; }
             self.last_animation_render = now;
         }
@@ -1165,12 +1190,14 @@ impl PluginState {
         // Fetch recent messages with scroll offset applied
         let active_msgs = session.visible_messages(current_ms, &self.ui, 80);
 
+        let (eff_w, eff_h) = self.ui.effective_panel_size();
+
         // Layout messages with badges and inline emotes
         let layout_messages = self.renderer.layouter().layout_messages_with_icons(
             active_msgs,
             &session.emotes_manifest,
             emotes,
-            self.ui.panel_width as f32,
+            eff_w as f32,
             self.ui.font_size,
             self.ui.emotes_enabled,
             self.ui.badges_enabled,
@@ -1195,14 +1222,14 @@ impl PluginState {
                 None => return,
             };
 
-        let stride = self.ui.panel_width * 4;
+        let stride = eff_w * 4;
         let ret = self.mpv.overlay_add_bgra(
             OVERLAY_ID,
             self.ui.panel_x,
             self.ui.panel_y,
             &bgra_data,
-            self.ui.panel_width,
-            self.ui.panel_height,
+            eff_w,
+            eff_h,
             stride,
         );
 
@@ -1236,12 +1263,14 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
         }
     };
 
-    // Observe essential playback properties ONLY
+    // Observe essential playback and OSD geometry properties
     mpv.observe_property(1, "time-pos", MpvFormat::Double);
     mpv.observe_property(2, "path", MpvFormat::String);
     mpv.observe_property(3, "pause", MpvFormat::Flag);
     mpv.observe_property(4, "vo-configured", MpvFormat::Flag);
     mpv.observe_property(5, "mouse-pos", MpvFormat::None);
+    mpv.observe_property(6, "osd-width", MpvFormat::Double);
+    mpv.observe_property(7, "osd-height", MpvFormat::Double);
 
     let mut state = PluginState::new(mpv);
 
@@ -1314,6 +1343,7 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                                 state.overlay_active = false;
                             }
                         } else {
+                            state.sync_overlay_to_osd();
                             state.update_frame();
                         }
                     }
@@ -1321,6 +1351,12 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                         // mouse-pos changed: instantly update dragging and hover detection
                         state.update_drag_position();
                         state.update_mouse_hover();
+                    }
+                    6 | 7 => {
+                        // osd-width / osd-height changed (fullscreen toggle or window resize)
+                        if !state.mouse.is_dragging() && state.sync_overlay_to_osd() {
+                            state.update_frame();
+                        }
                     }
                     _ => {}
                 }
@@ -1336,6 +1372,7 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                         state.on_path_changed(&p);
                     }
                 }
+                state.sync_overlay_to_osd();
                 state.update_frame();
             }
             MpvEventId::FileLoaded => {
@@ -1344,6 +1381,7 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                 if let Some(p) = state.mpv.get_property_string("path") {
                     state.on_path_changed(&p);
                 }
+                state.sync_overlay_to_osd();
                 if let Some(seconds) = state.pending_search_seek.take() {
                     state.mpv.seek_absolute(seconds);
                 }
@@ -1402,7 +1440,8 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                             "wheel_down" | "twitch_chat/wheel_down" | "twitch_chat_wheel_down" => {
                                 if state.ui.minimized { continue; }
                                 if state.ui.current_view == UiView::Settings {
-                                    state.ui.settings_scroll_offset = (state.ui.settings_scroll_offset + 32.0).min(max_settings_scroll(state.ui.panel_height));
+                                    let (_, eff_h) = state.ui.effective_panel_size();
+                                    state.ui.settings_scroll_offset = (state.ui.settings_scroll_offset + 32.0).min(max_settings_scroll(eff_h));
                                 } else if state.ui.current_view == UiView::Search {
                                     state.ui.search_scroll_offset = (state.ui.search_scroll_offset + 1)
                                         .min(state.ui.search_results.len().saturating_sub(1));

@@ -72,6 +72,12 @@ pub struct AppConfig {
     pub chat_y: Option<i32>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_rel_x: Option<f32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_rel_y: Option<f32>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_width: Option<u32>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -103,6 +109,9 @@ pub struct AppConfig {
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_minimized_position: Option<(i32, i32)>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub chat_minimized_rel_position: Option<(f32, f32)>,
 
     #[serde(default, flatten)]
     pub extra: std::collections::HashMap<String, serde_json::Value>,
@@ -141,6 +150,8 @@ impl Default for AppConfig {
             window_height: None,
             chat_x: None,
             chat_y: None,
+            chat_rel_x: None,
+            chat_rel_y: None,
             chat_width: None,
             chat_height: None,
             chat_font_size: None,
@@ -152,6 +163,7 @@ impl Default for AppConfig {
             chat_text_effect: None,
             chat_outline_width: None,
             chat_minimized_position: None,
+            chat_minimized_rel_position: None,
             extra: std::collections::HashMap::new(),
         }
     }

@@ -163,8 +163,7 @@ impl ChatRenderer {
         if ui.minimized {
             return self.render_minimized();
         }
-        let width = ui.panel_width;
-        let height = ui.panel_height;
+        let (width, height) = ui.effective_panel_size();
         if width == 0 || height == 0 {
             return None;
         }
@@ -216,13 +215,14 @@ impl ChatRenderer {
                 true
             });
         }
+        let (pw, ph) = ui.effective_panel_size();
         let mut rgba = self.render_frame(&static_messages, cache, ui, channel)?;
         for pixel in rgba.chunks_exact_mut(4) { pixel.swap(0, 2); }
-        let base = Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(ui.panel_width, ui.panel_height)?)?;
-        let mut mask = Mask::new(ui.panel_width, ui.panel_height)?;
-        let top = (viewport.top.ceil() as usize).min(ui.panel_height as usize);
-        let bottom = (viewport.bottom.ceil() as usize).min(ui.panel_height as usize);
-        mask.data_mut()[top * ui.panel_width as usize..bottom * ui.panel_width as usize].fill(255);
+        let base = Pixmap::from_vec(rgba, tiny_skia::IntSize::from_wh(pw, ph)?)?;
+        let mut mask = Mask::new(pw, ph)?;
+        let top = (viewport.top.ceil() as usize).min(ph as usize);
+        let bottom = (viewport.bottom.ceil() as usize).min(ph as usize);
+        mask.data_mut()[top * pw as usize..bottom * pw as usize].fill(255);
         let last_frames = vec![None; images.len()];
         Some(ChatScene { base, images, clip: (viewport.top, viewport.bottom), mask, last_frames, cache_revision: cache.revision() })
     }
@@ -318,7 +318,7 @@ impl ChatRenderer {
     }
 
     fn render_header(&self, pixmap: &mut Pixmap, ui: &UiState, channel_name: &str) {
-        let width = ui.panel_width as f32;
+        let width = ui.effective_panel_size().0 as f32;
         let bar_h = 28.0;
 
         // Header background
@@ -423,8 +423,9 @@ impl ChatRenderer {
         emotes: &EmoteCache,
         ui: &UiState,
     ) {
-        let width = ui.panel_width as f32;
-        let height = ui.panel_height as f32;
+        let (pw, ph) = ui.effective_panel_size();
+        let width = pw as f32;
+        let height = ph as f32;
         let viewport = ChatViewport::new(ui, messages.last().map(|m| m.bottom_y).unwrap_or(0.0));
         let visible_top = viewport.top;
         let visible_bottom = viewport.bottom;
@@ -571,10 +572,11 @@ impl ChatRenderer {
     }
 
     fn render_settings_view(&self, pixmap: &mut Pixmap, ui: &UiState) {
-        let max_scroll = max_settings_scroll(ui.panel_height);
+        let (pw, ph) = ui.effective_panel_size();
+        let max_scroll = max_settings_scroll(ph);
         let scroll = ui.settings_scroll_offset.min(max_scroll);
-        let height = crate::ui::SETTINGS_CONTENT_HEIGHT.max(ui.panel_height as f32) as u32;
-        let Some(mut content) = Pixmap::new(ui.panel_width, height) else { return; };
+        let height = crate::ui::SETTINGS_CONTENT_HEIGHT.max(ph as f32) as u32;
+        let Some(mut content) = Pixmap::new(pw, height) else { return; };
         self.render_settings_content(&mut content, ui);
         let Some(mut mask) = Mask::new(pixmap.width(), pixmap.height()) else { return; };
         let start = (32usize.min(pixmap.height() as usize)) * pixmap.width() as usize;
@@ -582,11 +584,11 @@ impl ChatRenderer {
         pixmap.draw_pixmap(0, -(scroll as i32), content.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), Some(&mask));
 
         if max_scroll > 0.0 {
-            let view_h = (ui.panel_height as f32 - 36.0).max(1.0);
+            let view_h = (ph as f32 - 36.0).max(1.0);
             self.draw_scrollbar(
                 pixmap,
                 36.0,
-                (ui.panel_height as f32 - 6.0).max(38.0),
+                (ph as f32 - 6.0).max(38.0),
                 crate::ui::SETTINGS_CONTENT_HEIGHT,
                 view_h,
                 scroll,
@@ -595,7 +597,7 @@ impl ChatRenderer {
     }
 
     fn render_settings_content(&self, pixmap: &mut Pixmap, ui: &UiState) {
-        let width = ui.panel_width as f32;
+        let width = ui.effective_panel_size().0 as f32;
         let mut cur_y = 36.0;
 
         // Title
@@ -765,8 +767,9 @@ impl ChatRenderer {
     }
 
     fn render_search_view(&self, pixmap: &mut Pixmap, ui: &UiState) {
-        let width = ui.panel_width as f32;
-        let height = ui.panel_height as f32;
+        let (pw, ph) = ui.effective_panel_size();
+        let width = pw as f32;
+        let height = ph as f32;
         let mut cur_y = 36.0;
 
         // Search bar box with active glowing border
