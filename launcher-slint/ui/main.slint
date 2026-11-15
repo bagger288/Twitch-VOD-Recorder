@@ -132,6 +132,106 @@ component DialogButton inherits Rectangle {
     }
 }
 
+component StatusPill inherits Rectangle {
+    in property <bool> active: false;
+    width: 34px;
+    height: 20px;
+    border-radius: 10px;
+    background: root.active ? #133323 : #222229;
+    border-width: 1px;
+    border-color: root.active ? #1f573b : #30303a;
+
+    Text {
+        text: root.active ? "✓" : "—";
+        color: root.active ? #00e676 : #686876;
+        font-size: 8.5pt;
+        font-weight: 700;
+        horizontal-alignment: center;
+        vertical-alignment: center;
+    }
+}
+
+component LogConsole inherits Rectangle {
+    in property <string> title: "Лог выполнения";
+    in property <string> text: "";
+    callback clear_clicked();
+    callback copy_clicked();
+
+    background: #141417;
+    border-radius: 6px;
+    border-width: 1px;
+    border-color: #262630;
+    clip: true;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Console header bar
+        Rectangle {
+            height: 26px;
+            background: #1b1b22;
+
+            HorizontalLayout {
+                padding-left: 10px;
+                padding-right: 6px;
+                spacing: 6px;
+
+                Text {
+                    text: root.title;
+                    color: #9a9aa6;
+                    font-size: 8.5pt;
+                    font-weight: 600;
+                    vertical-alignment: center;
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                IconButton {
+                    width: 78px;
+                    height: 20px;
+                    y: 3px;
+                    text: "Копировать";
+                    enabled: root.text != "";
+                    bg_color: #25252e;
+                    hover_color: #353542;
+                    text_color: #d4d4dc;
+                    clicked => { root.copy_clicked(); }
+                }
+
+                IconButton {
+                    width: 66px;
+                    height: 20px;
+                    y: 3px;
+                    text: "Очистить";
+                    enabled: root.text != "";
+                    bg_color: #25252e;
+                    hover_color: #353542;
+                    text_color: #d4d4dc;
+                    clicked => { root.clear_clicked(); }
+                }
+            }
+
+            Rectangle {
+                y: parent.height - 1px;
+                height: 1px;
+                background: #262630;
+            }
+        }
+
+        ScrollView {
+            VerticalLayout {
+                padding: 8px;
+                Text {
+                    text: root.text != "" ? root.text : "Ожидание событий…";
+                    color: root.text != "" ? #efeff1 : #5e5e6b;
+                    font-family: "Consolas";
+                    font-size: 8.5pt;
+                }
+            }
+        }
+    }
+}
+
 export component MainWindow inherits Window {
     title: "Twitch recorder";
     icon: @image-url("assets/app.png");
@@ -171,6 +271,7 @@ export component MainWindow inherits Window {
     callback refresh_records();
     callback open_records_folder();
     callback open_session_folder();
+    callback download_missing_emotes();
     callback launch_mpv();
     callback select_channel(string);
     callback select_recording(string);
@@ -183,10 +284,13 @@ export component MainWindow inherits Window {
     callback move_import_part_down(int);
     callback sort_import_parts();
     callback clear_import_parts();
+    callback clear_import_console();
 
     callback toggle_recording();
+    callback clear_recorder_console();
     callback toggle_pc_agent();
     callback clear_pc_agent_console();
+    callback copy_console_text(string);
 
     callback refresh_token_manually();
     callback save_settings();
@@ -197,6 +301,7 @@ export component MainWindow inherits Window {
     in-out property <string> selected_channel: "";
     in property <[RecordingItem]> recordings: [];
     in-out property <string> selected_recording_id: "";
+    in-out property <bool> emotes_busy: false;
 
     // Tab 2 Import properties
     in property <[ImportPartItem]> imp_parts: [];
@@ -267,29 +372,46 @@ export component MainWindow inherits Window {
             }
         }
 
-        // Tab Navigation Buttons
+        // Tab Navigation Buttons with Live Process Indicators
         HorizontalLayout {
             spacing: 4px;
             height: 34px;
 
             for tab_title[i] in ["Записи", "Импорт", "Запись", "PC Agent", "Настройки"]: Rectangle {
-                background: root.active_tab == i ? root.c_accent : root.c_card;
-                border-radius: 4px;
+                background: root.active_tab == i ? root.c_accent : (tab_touch.has-hover ? #282830 : root.c_card);
+                border-radius: 5px;
+                border-width: root.active_tab == i ? 0px : 1px;
+                border-color: #2a2a33;
+                animate background { duration: 120ms; }
 
-                TouchArea {
+                tab_touch := TouchArea {
+                    mouse-cursor: pointer;
                     clicked => {
                         root.active_tab = i;
                         root.select_tab(i);
                     }
                 }
 
-                Text {
-                    text: tab_title;
-                    color: root.active_tab == i ? #ffffff : root.c_text;
-                    font-size: 10pt;
-                    font-weight: root.active_tab == i ? 700 : 400;
-                    horizontal-alignment: center;
-                    vertical-alignment: center;
+                HorizontalLayout {
+                    alignment: center;
+                    spacing: 6px;
+
+                    if (i == 1 && root.imp_busy) || (i == 2 && root.rec_active) || (i == 3 && root.agent_active): Rectangle {
+                        width: 8px;
+                        height: 8px;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 4px;
+                        background: i == 1 ? #ffb300 : (i == 2 ? #ff4b4b : (root.agent_recording_now ? #ff4b4b : #00e676));
+                    }
+
+                    Text {
+                        text: tab_title;
+                        color: root.active_tab == i ? #ffffff : root.c_text;
+                        font-size: 10pt;
+                        font-weight: root.active_tab == i ? 700 : 500;
+                        horizontal-alignment: center;
+                        vertical-alignment: center;
+                    }
                 }
             }
         }
@@ -305,12 +427,71 @@ export component MainWindow inherits Window {
                 padding: 10px;
                 spacing: 8px;
 
-                HorizontalLayout {
+                if root.channels.length == 0: Rectangle {
+                    background: #19191e;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #2b2b34;
+                    vertical-stretch: 1;
+
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 10px;
+                        padding: 24px;
+
+                        Text {
+                            text: "Сохранённых записей пока нет";
+                            font-size: 12pt;
+                            font-weight: 700;
+                            color: #ffffff;
+                            horizontal-alignment: center;
+                        }
+
+                        Text {
+                            text: "Запустите запись прямого эфира во вкладке «Запись» или импортируйте видеофайл с историей чата во вкладке «Импорт».";
+                            font-size: 9.5pt;
+                            color: root.c_text_dim;
+                            horizontal-alignment: center;
+                            wrap: word-wrap;
+                        }
+
+                        HorizontalLayout {
+                            alignment: center;
+                            spacing: 10px;
+                            padding-top: 6px;
+
+                            Button {
+                                text: "🔴 Перейти к записи";
+                                primary: true;
+                                clicked => {
+                                    root.active_tab = 2;
+                                    root.select_tab(2);
+                                }
+                            }
+
+                            Button {
+                                text: "⚡ Импортировать видео";
+                                clicked => {
+                                    root.active_tab = 1;
+                                    root.select_tab(1);
+                                }
+                            }
+
+                            Button {
+                                text: "Обновить";
+                                clicked => { root.refresh_records(); }
+                            }
+                        }
+                    }
+                }
+
+                if root.channels.length > 0: HorizontalLayout {
                     spacing: 8px;
+                    vertical-stretch: 1;
 
                     // Left channel column
                     VerticalLayout {
-                        width: 150px;
+                        width: 155px;
                         spacing: 4px;
 
                         Text {
@@ -322,25 +503,46 @@ export component MainWindow inherits Window {
 
                         ScrollView {
                             VerticalLayout {
-                                spacing: 2px;
+                                spacing: 3px;
                                 for ch in root.channels: Rectangle {
-                                    height: 28px;
-                                    background: root.selected_channel == ch.name ? root.c_accent : root.c_input;
-                                    border-radius: 3px;
-                                    TouchArea {
+                                    height: 30px;
+                                    background: root.selected_channel == ch.name ? root.c_accent : (ch_touch.has-hover ? #30303a : root.c_input);
+                                    border-radius: 4px;
+                                    animate background { duration: 120ms; }
+                                    ch_touch := TouchArea {
+                                        mouse-cursor: pointer;
                                         clicked => {
                                             root.selected_channel = ch.name;
                                             root.select_channel(ch.name);
                                         }
                                     }
                                     HorizontalLayout {
-                                        padding-left: 6px;
+                                        padding-left: 8px;
                                         padding-right: 6px;
+                                        spacing: 4px;
                                         Text {
-                                            text: ch.name + " (" + ch.count + ")";
+                                            text: ch.name;
                                             color: #ffffff;
                                             font-size: 9.5pt;
+                                            font-weight: root.selected_channel == ch.name ? 700 : 500;
                                             vertical-alignment: center;
+                                            overflow: elide;
+                                            horizontal-stretch: 1;
+                                        }
+                                        Rectangle {
+                                            width: 24px;
+                                            height: 18px;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: 9px;
+                                            background: root.selected_channel == ch.name ? #6e2fd4 : #1d1d23;
+                                            Text {
+                                                text: ch.count;
+                                                color: root.selected_channel == ch.name ? #ffffff : root.c_text_dim;
+                                                font-size: 8pt;
+                                                font-weight: 700;
+                                                horizontal-alignment: center;
+                                                vertical-alignment: center;
+                                            }
                                         }
                                     }
                                 }
@@ -351,10 +553,12 @@ export component MainWindow inherits Window {
                     // Right table view
                     VerticalLayout {
                         spacing: 6px;
+                        horizontal-stretch: 1;
 
                         // Toolbar
                         HorizontalLayout {
                             height: 28px;
+                            spacing: 6px;
                             Text {
                                 text: root.selected_channel != "" ? "Записи канала: " + root.selected_channel : "Выберите канал";
                                 font-size: 10pt;
@@ -362,7 +566,7 @@ export component MainWindow inherits Window {
                                 color: #ffffff;
                                 vertical-alignment: center;
                             }
-                            Rectangle { } // Spacer
+                            Rectangle { horizontal-stretch: 1; }
                             Button {
                                 text: "Папка";
                                 clicked => { root.open_records_folder(); }
@@ -375,31 +579,33 @@ export component MainWindow inherits Window {
 
                         // Table Header
                         Rectangle {
-                            height: 26px;
-                            background: #2b2b30;
+                            height: 28px;
+                            background: #2b2b33;
                             border-radius: 4px;
                             HorizontalLayout {
                                 padding-left: 8px;
                                 padding-right: 8px;
                                 spacing: 6px;
-                                Text { width: 145px; text: "Дата и время"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
-                                Text { width: 48px; text: "Части"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
-                                Text { width: 75px; text: "Время"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
-                                Text { width: 75px; text: "Размер"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
-                                Text { width: 45px; text: "Чат"; font-size: 9pt; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
-                                Text { width: 55px; text: "Эмоуты"; font-size: 9pt; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                Text { horizontal-stretch: 1; min-width: 135px; text: "Дата и время"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
+                                Text { width: 46px; text: "Части"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
+                                Text { width: 72px; text: "Время"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
+                                Text { width: 72px; text: "Размер"; font-size: 9pt; font-weight: 700; color: #ffffff; vertical-alignment: center; }
+                                Text { width: 44px; text: "Чат"; font-size: 9pt; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
+                                Text { width: 54px; text: "Эмоуты"; font-size: 9pt; font-weight: 700; color: #ffffff; horizontal-alignment: center; vertical-alignment: center; }
                             }
                         }
 
                         // Recordings List
                         ScrollView {
                             VerticalLayout {
-                                spacing: 2px;
+                                spacing: 3px;
                                 for rec in root.recordings: Rectangle {
-                                    height: 32px;
-                                    background: root.selected_recording_id == rec.id ? root.c_accent : root.c_input;
+                                    height: 34px;
+                                    background: root.selected_recording_id == rec.id ? root.c_accent : (rec_touch.has-hover ? #30303a : root.c_input);
                                     border-radius: 4px;
-                                    TouchArea {
+                                    animate background { duration: 120ms; }
+                                    rec_touch := TouchArea {
+                                        mouse-cursor: pointer;
                                         clicked => {
                                             root.selected_recording_id = rec.id;
                                             root.select_recording(rec.id);
@@ -413,12 +619,26 @@ export component MainWindow inherits Window {
                                         padding-left: 8px;
                                         padding-right: 8px;
                                         spacing: 6px;
-                                        Text { width: 145px; text: rec.date_str; color: #ffffff; vertical-alignment: center; }
-                                        Text { width: 48px; text: rec.parts_count + " ч."; color: root.c_text_dim; vertical-alignment: center; }
-                                        Text { width: 75px; text: rec.duration_str; color: root.c_text; vertical-alignment: center; }
-                                        Text { width: 75px; text: rec.size_str; color: root.c_text_dim; vertical-alignment: center; }
-                                        Text { width: 45px; text: rec.has_chat ? "✓" : ""; color: #00c853; horizontal-alignment: center; vertical-alignment: center; }
-                                        Text { width: 55px; text: rec.has_emotes ? "✓" : ""; color: #00c853; horizontal-alignment: center; vertical-alignment: center; }
+                                        Text { horizontal-stretch: 1; min-width: 135px; text: rec.date_str; color: #ffffff; font-weight: root.selected_recording_id == rec.id ? 600 : 400; vertical-alignment: center; overflow: elide; }
+                                        Text { width: 46px; text: rec.parts_count + " ч."; color: root.selected_recording_id == rec.id ? #efe8ff : root.c_text_dim; vertical-alignment: center; }
+                                        Text { width: 72px; text: rec.duration_str; color: root.c_text; vertical-alignment: center; }
+                                        Text { width: 72px; text: rec.size_str; color: root.selected_recording_id == rec.id ? #efe8ff : root.c_text_dim; vertical-alignment: center; }
+                                        Rectangle {
+                                            width: 44px;
+                                            StatusPill {
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                active: rec.has_chat;
+                                            }
+                                        }
+                                        Rectangle {
+                                            width: 54px;
+                                            StatusPill {
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2;
+                                                active: rec.has_emotes;
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -431,19 +651,26 @@ export component MainWindow inherits Window {
                     height: 36px;
                     spacing: 8px;
                     Text {
-                        text: "Двойной клик — запуск";
-                        color: root.c_text_dim;
+                        text: root.emotes_busy ? "Кэширование эмоутов сессии…" : "Двойной клик — запуск";
+                        color: root.emotes_busy ? root.c_title : root.c_text_dim;
                         font-size: 8.5pt;
                         vertical-alignment: center;
                     }
-                    Rectangle { } // Spacer
+                    Rectangle { horizontal-stretch: 1; }
+                    Button {
+                        text: root.emotes_busy ? "Загрузка…" : "⬇ Докачать эмоуты";
+                        enabled: !root.emotes_busy && root.recordings.length > 0;
+                        clicked => { root.download_missing_emotes(); }
+                    }
                     Button {
                         text: "Папка сессии";
+                        enabled: root.recordings.length > 0;
                         clicked => { root.open_session_folder(); }
                     }
                     Button {
                         text: "▶ Смотреть в mpv";
                         primary: true;
+                        enabled: root.recordings.length > 0;
                         clicked => { root.launch_mpv(); }
                     }
                 }
@@ -621,6 +848,7 @@ export component MainWindow inherits Window {
                         }
 
                         TouchArea {
+                            mouse-cursor: pointer;
                             clicked => { root.imp_auto_detect = !root.imp_auto_detect; }
                         }
                     }
@@ -630,6 +858,7 @@ export component MainWindow inherits Window {
                         font-size: 9.5pt;
                         vertical-alignment: center;
                         TouchArea {
+                            mouse-cursor: pointer;
                             clicked => { root.imp_auto_detect = !root.imp_auto_detect; }
                         }
                     }
@@ -650,20 +879,12 @@ export component MainWindow inherits Window {
                 }
 
                 // Log console
-                Rectangle {
-                    background: #141417;
-                    border-radius: 4px;
-                    ScrollView {
-                        VerticalLayout {
-                            padding: 6px;
-                            Text {
-                                text: root.imp_console_text;
-                                color: root.c_text;
-                                font-family: "Consolas";
-                                font-size: 8.5pt;
-                            }
-                        }
-                    }
+                LogConsole {
+                    vertical-stretch: 1;
+                    title: "Лог импорта и кэширования";
+                    text: root.imp_console_text;
+                    clear_clicked => { root.clear_import_console(); }
+                    copy_clicked => { root.copy_console_text(root.imp_console_text); }
                 }
             }
 
@@ -728,20 +949,12 @@ export component MainWindow inherits Window {
                 }
 
                 // Recorder console
-                Rectangle {
-                    background: #141417;
-                    border-radius: 4px;
-                    ScrollView {
-                        VerticalLayout {
-                            padding: 6px;
-                            Text {
-                                text: root.rec_console_text;
-                                color: root.c_text;
-                                font-family: "Consolas";
-                                font-size: 8.5pt;
-                            }
-                        }
-                    }
+                LogConsole {
+                    vertical-stretch: 1;
+                    title: "Лог записи эфира";
+                    text: root.rec_console_text;
+                    clear_clicked => { root.clear_recorder_console(); }
+                    copy_clicked => { root.copy_console_text(root.rec_console_text); }
                 }
             }
 
@@ -805,20 +1018,12 @@ export component MainWindow inherits Window {
                 }
 
                 // Console
-                Rectangle {
-                    background: #141417;
-                    border-radius: 4px;
-                    ScrollView {
-                        VerticalLayout {
-                            padding: 6px;
-                            Text {
-                                text: root.agent_console_text;
-                                color: root.c_text;
-                                font-family: "Consolas";
-                                font-size: 8.5pt;
-                            }
-                        }
-                    }
+                LogConsole {
+                    vertical-stretch: 1;
+                    title: "Лог PC Agent";
+                    text: root.agent_console_text;
+                    clear_clicked => { root.clear_pc_agent_console(); }
+                    copy_clicked => { root.copy_console_text(root.agent_console_text); }
                 }
             }
 
@@ -828,87 +1033,167 @@ export component MainWindow inherits Window {
                 spacing: 8px;
 
                 ScrollView {
+                    vertical-stretch: 1;
                     VerticalLayout {
-                        spacing: 8px;
+                        spacing: 10px;
                         padding-right: 10px;
 
-                        Text { text: "Настройки путей и Twitch API"; font-size: 11pt; font-weight: 700; color: root.c_title; }
+                        // Section Card 1: External Tools
+                        Rectangle {
+                            background: #18181b;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #2c2c35;
 
-                        Text { text: "Путь к Streamlink:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_streamlink; }
-                        if root.status_streamlink != "": Text {
-                            text: root.status_streamlink;
-                            color: root.valid_streamlink ? #00e676 : #ff5252;
-                            font-size: 8.5pt;
-                            font-weight: 700;
-                        }
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
 
-                        Text { text: "Путь к mpv:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_mpv; }
-                        if root.status_mpv != "": Text {
-                            text: root.status_mpv;
-                            color: root.valid_mpv ? #00e676 : #ff5252;
-                            font-size: 8.5pt;
-                            font-weight: 700;
-                        }
+                                HorizontalLayout {
+                                    Text {
+                                        text: "Внешние утилиты";
+                                        font-size: 10.5pt;
+                                        font-weight: 700;
+                                        color: root.c_title;
+                                        vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    Button {
+                                        text: "🔍 Проверить утилиты";
+                                        clicked => { root.check_tool_paths(); }
+                                    }
+                                }
 
-                        Text { text: "Статус FFmpeg (для экспорта клипов):"; font-size: 9pt; color: root.c_text_dim; }
-                        if root.status_ffmpeg != "": Text {
-                            text: root.status_ffmpeg;
-                            color: root.valid_ffmpeg ? #00e676 : #ffb300;
-                            font-size: 8.5pt;
-                            font-weight: 700;
-                        }
+                                Text { text: "Путь к Streamlink:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_streamlink; }
+                                if root.status_streamlink != "": Text {
+                                    text: root.status_streamlink;
+                                    color: root.valid_streamlink ? #00e676 : #ff5252;
+                                    font-size: 8.5pt;
+                                    font-weight: 700;
+                                }
 
-                        HorizontalLayout {
-                            Button {
-                                text: "🔍 Проверить утилиты";
-                                clicked => { root.check_tool_paths(); }
+                                Text { text: "Путь к mpv:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_mpv; }
+                                if root.status_mpv != "": Text {
+                                    text: root.status_mpv;
+                                    color: root.valid_mpv ? #00e676 : #ff5252;
+                                    font-size: 8.5pt;
+                                    font-weight: 700;
+                                }
+
+                                Text { text: "Статус FFmpeg (для экспорта клипов):"; font-size: 9pt; color: root.c_text_dim; }
+                                if root.status_ffmpeg != "": Text {
+                                    text: root.status_ffmpeg;
+                                    color: root.valid_ffmpeg ? #00e676 : #ffb300;
+                                    font-size: 8.5pt;
+                                    font-weight: 700;
+                                }
                             }
-                            Rectangle { }
                         }
 
-                        Text { text: "Twitch Client ID:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_client_id; }
+                        // Section Card 2: Twitch API OAuth
+                        Rectangle {
+                            background: #18181b;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #2c2c35;
 
-                        Text { text: "Twitch App/User Token:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_app_token; input-type: InputType.password; }
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
 
-                        Text { text: "Twitch Client Secret:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_client_secret; input-type: InputType.password; }
+                                Text {
+                                    text: "Авторизация Twitch API";
+                                    font-size: 10.5pt;
+                                    font-weight: 700;
+                                    color: root.c_title;
+                                }
 
-                        Text { text: "Twitch Refresh Token:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_refresh_token; input-type: InputType.password; }
+                                Text { text: "Twitch Client ID:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_client_id; }
 
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Button { text: "Обновить токен"; clicked => { root.refresh_token_manually(); } }
-                            Text { text: root.cfg_token_status; color: root.c_text_dim; vertical-alignment: center; }
-                            Rectangle { }
-                        }
+                                Text { text: "Twitch App/User Token:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_app_token; input-type: InputType.password; }
 
-                        Text { text: "Папка records:"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_records_dir; }
+                                Text { text: "Twitch Client Secret:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_client_secret; input-type: InputType.password; }
 
-                        Text { text: "SERVER_URL (сервер мониторинга):"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_server_url; placeholder-text: "https://your-bot-server.com"; }
+                                Text { text: "Twitch Refresh Token:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_refresh_token; input-type: InputType.password; }
 
-                        Text { text: "Twitch Proxy Playlist (--twitch-proxy-playlist):"; font-size: 9pt; color: root.c_text_dim; }
-                        AppInput { text <=> root.cfg_proxy_playlist; placeholder-text: "прокси через запятую"; }
-
-                        HorizontalLayout {
-                            spacing: 8px;
-                            Text { text: "Движок чата: Rust (twitch_chat.dll)"; color: #a3be8c; font-weight: 700; font-size: 9pt; vertical-alignment: center; }
-                            Rectangle { }
-                        }
-
-                        HorizontalLayout {
-                            Rectangle { }
-                            Button {
-                                text: "Сохранить настройки";
-                                primary: true;
-                                clicked => { root.save_settings(); }
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    padding-top: 4px;
+                                    Button { text: "Обновить токен"; clicked => { root.refresh_token_manually(); } }
+                                    Text { text: root.cfg_token_status; color: root.c_text_dim; vertical-alignment: center; overflow: elide; }
+                                    Rectangle { }
+                                }
                             }
+                        }
+
+                        // Section Card 3: Paths & Network
+                        Rectangle {
+                            background: #18181b;
+                            border-radius: 6px;
+                            border-width: 1px;
+                            border-color: #2c2c35;
+
+                            VerticalLayout {
+                                padding: 12px;
+                                spacing: 6px;
+
+                                Text {
+                                    text: "Сеть, папки и движок";
+                                    font-size: 10.5pt;
+                                    font-weight: 700;
+                                    color: root.c_title;
+                                }
+
+                                Text { text: "Папка records:"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_records_dir; }
+
+                                Text { text: "SERVER_URL (сервер мониторинга):"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_server_url; placeholder-text: "https://your-bot-server.com"; }
+
+                                Text { text: "Twitch Proxy Playlist (--twitch-proxy-playlist):"; font-size: 9pt; color: root.c_text_dim; }
+                                AppInput { text <=> root.cfg_proxy_playlist; placeholder-text: "прокси через запятую"; }
+
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    padding-top: 4px;
+                                    Text { text: "Движок чата: Rust (twitch_chat.dll)"; color: #a3be8c; font-weight: 700; font-size: 9pt; vertical-alignment: center; }
+                                    Rectangle { }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Pinned bottom save bar
+                Rectangle {
+                    height: 42px;
+                    background: #19191e;
+                    border-radius: 6px;
+                    border-width: 1px;
+                    border-color: #2c2c35;
+
+                    HorizontalLayout {
+                        padding-left: 12px;
+                        padding-right: 10px;
+                        spacing: 8px;
+
+                        Text {
+                            text: "Настройки сохраняются в config.json";
+                            color: root.c_text_dim;
+                            font-size: 8.5pt;
+                            vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        Button {
+                            text: "Сохранить настройки";
+                            primary: true;
+                            clicked => { root.save_settings(); }
                         }
                     }
                 }

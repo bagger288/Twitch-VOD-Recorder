@@ -96,6 +96,24 @@ impl ChatRenderer {
                 continue;
             }
 
+            let row_top = shifted_top.max(visible_top);
+            let row_bottom = shifted_bottom.min(visible_bottom);
+            if row_bottom > row_top {
+                if msg.is_gap() {
+                    if let Some(rect) = Rect::from_xywh(8.0, row_top, (width as f32 - 16.0).max(1.0), row_bottom - row_top) {
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(255, 136, 0, 32);
+                        Self::fill_rounded_rect(&mut pixmap, rect, 4.0, &paint, Some(&mask));
+                    }
+                } else if ui.zebra_striping && bg_alpha > 0 && msg.msg_index % 2 == 1 {
+                    if let Some(rect) = Rect::from_xywh(4.0, row_top, (width as f32 - 8.0).max(1.0), row_bottom - row_top) {
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(255, 255, 255, 7);
+                        pixmap.fill_rect(rect, &paint, Transform::identity(), Some(&mask));
+                    }
+                }
+            }
+
             for token in &msg.tokens {
                 match token {
                     LayoutToken::Text { text, color, style, x, y } => {
@@ -432,6 +450,8 @@ impl ChatRenderer {
             return;
         }
 
+        let total_h = messages.last().map(|m| m.bottom_y).unwrap_or(0.0);
+
         for msg in messages {
             let shifted_top = base_y + msg.top_y;
             let shifted_bottom = base_y + msg.bottom_y;
@@ -440,13 +460,35 @@ impl ChatRenderer {
                 continue;
             }
 
-            if ui.highlighted_message_ts == Some(msg.timestamp_ms) {
-                let top = shifted_top.max(visible_top);
-                let bottom = shifted_bottom.min(visible_bottom);
-                if let Some(rect) = Rect::from_xywh(8.0, top, width - 16.0, bottom - top) {
-                    let mut paint = Paint::default();
-                    paint.set_color_rgba8(145, 71, 255, 70);
-                    pixmap.fill_rect(rect, &paint, Transform::identity(), Some(&mask));
+            let top = shifted_top.max(visible_top);
+            let bottom = shifted_bottom.min(visible_bottom);
+            if bottom > top {
+                if ui.highlighted_message_ts == Some(msg.timestamp_ms) {
+                    if let Some(rect) = Rect::from_xywh(8.0, top, (width - 16.0).max(1.0), bottom - top) {
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(145, 71, 255, 70);
+                        Self::fill_rounded_rect(pixmap, rect, 4.0, &paint, Some(&mask));
+                    }
+                } else if msg.is_gap() {
+                    if let Some(rect) = Rect::from_xywh(8.0, top, (width - 16.0).max(1.0), bottom - top) {
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(255, 136, 0, 32);
+                        Self::fill_rounded_rect(pixmap, rect, 4.0, &paint, Some(&mask));
+                        let mut line_paint = Paint::default();
+                        line_paint.set_color_rgba8(255, 136, 0, 85);
+                        if let Some(top_line) = Rect::from_xywh(8.0, top, (width - 16.0).max(1.0), 1.0) {
+                            pixmap.fill_rect(top_line, &line_paint, Transform::identity(), Some(&mask));
+                        }
+                        if let Some(bot_line) = Rect::from_xywh(8.0, (bottom - 1.0).max(top), (width - 16.0).max(1.0), 1.0) {
+                            pixmap.fill_rect(bot_line, &line_paint, Transform::identity(), Some(&mask));
+                        }
+                    }
+                } else if ui.zebra_striping && ui.bg_opacity > 0.0 && msg.msg_index % 2 == 1 {
+                    if let Some(rect) = Rect::from_xywh(4.0, top, (width - 8.0).max(1.0), bottom - top) {
+                        let mut paint = Paint::default();
+                        paint.set_color_rgba8(255, 255, 255, 7);
+                        pixmap.fill_rect(rect, &paint, Transform::identity(), Some(&mask));
+                    }
                 }
             }
             for token in &msg.tokens {
@@ -484,6 +526,21 @@ impl ChatRenderer {
             }
         }
 
+        let available_h = (visible_bottom - visible_top).max(1.0);
+        if total_h > available_h && (ui.scroll_offset != 0 || ui.chat_scroll_anchor.is_some()) {
+            let max_extra = (ui.scroll_offset.max(0) as f32) * 28.0;
+            let total_virtual = total_h + max_extra;
+            let offset_top = (total_h - available_h).max(0.0);
+            self.draw_scrollbar(
+                pixmap,
+                visible_top + 2.0,
+                visible_bottom - 2.0,
+                total_virtual,
+                available_h,
+                offset_top,
+            );
+        }
+
         // If scrolled into history or into future, render interactive banner at bottom
         if ui.scroll_offset != 0 || ui.chat_scroll_anchor.is_some() {
             let ban_y = height - 26.0;
@@ -514,7 +571,8 @@ impl ChatRenderer {
     }
 
     fn render_settings_view(&self, pixmap: &mut Pixmap, ui: &UiState) {
-        let scroll = ui.settings_scroll_offset.min(max_settings_scroll(ui.panel_height));
+        let max_scroll = max_settings_scroll(ui.panel_height);
+        let scroll = ui.settings_scroll_offset.min(max_scroll);
         let height = crate::ui::SETTINGS_CONTENT_HEIGHT.max(ui.panel_height as f32) as u32;
         let Some(mut content) = Pixmap::new(ui.panel_width, height) else { return; };
         self.render_settings_content(&mut content, ui);
@@ -522,6 +580,18 @@ impl ChatRenderer {
         let start = (32usize.min(pixmap.height() as usize)) * pixmap.width() as usize;
         mask.data_mut()[start..].fill(255);
         pixmap.draw_pixmap(0, -(scroll as i32), content.as_ref(), &tiny_skia::PixmapPaint::default(), Transform::identity(), Some(&mask));
+
+        if max_scroll > 0.0 {
+            let view_h = (ui.panel_height as f32 - 36.0).max(1.0);
+            self.draw_scrollbar(
+                pixmap,
+                36.0,
+                (ui.panel_height as f32 - 6.0).max(38.0),
+                crate::ui::SETTINGS_CONTENT_HEIGHT,
+                view_h,
+                scroll,
+            );
+        }
     }
 
     fn render_settings_content(&self, pixmap: &mut Pixmap, ui: &UiState) {
@@ -648,7 +718,7 @@ impl ChatRenderer {
         let mut sbox_paint = Paint::default();
         sbox_paint.set_color_rgba8(26, 28, 38, 255);
         if let Some(r) = Rect::from_xywh(12.0, cur_y, width - 24.0, sync_box_h) {
-            pixmap.fill_rect(r, &sbox_paint, Transform::identity(), None);
+            Self::fill_rounded_rect(pixmap, r, 6.0, &sbox_paint, None);
         }
 
         self.draw_text(
@@ -661,8 +731,8 @@ impl ChatRenderer {
         );
 
         let anchor_preview = if let Some(ref m) = ui.selected_sync_msg {
-            let snip: String = m.text.chars().take(28).collect();
-            format!("Якорь: {}: {}", m.display_name, snip)
+            let raw_preview = format!("Якорь: {}: {}", m.display_name, m.text);
+            self.truncate_text_to_width(&raw_preview, (width - 40.0).max(60.0), 11.0, TextStyle::Ui)
         } else {
             "Кликните сообщение в чате для выбора якоря".to_string()
         };
@@ -676,6 +746,15 @@ impl ChatRenderer {
             false,
             [26, 52, 46, 255],
             [0, 255, 200, 255],
+        );
+        self.draw_text(pixmap, "Зебра-фон строк:", 12.0, 372.0, 12.0, [200, 200, 220, 255]);
+        self.draw_button(
+            pixmap,
+            &Self::btn_zebra(width),
+            if ui.zebra_striping { "Вкл." } else { "Выкл." },
+            ui.zebra_striping,
+            [35, 36, 46, 255],
+            if ui.zebra_striping { [0, 255, 200, 255] } else { [180, 180, 195, 255] },
         );
         self.draw_text(pixmap, "Читаемость текста:", 12.0, 404.0, 12.0, [200, 200, 220, 255]);
         self.draw_button(pixmap, &Self::btn_text_effect(width), ui.text_effect.label(), false, [35, 36, 46, 255], [0, 220, 255, 255]);
@@ -696,11 +775,11 @@ impl ChatRenderer {
         let mut sbar_paint = Paint::default();
         sbar_paint.set_color_rgba8(28, 29, 38, 255);
         if let Some(r) = Rect::from_xywh(12.0, cur_y, sb_w, sb_h) {
-            pixmap.fill_rect(r, &sbar_paint, Transform::identity(), None);
+            Self::fill_rounded_rect(pixmap, r, 5.0, &sbar_paint, None);
         }
         let mut sborder_paint = Paint::default();
         sborder_paint.set_color_rgba8(145, 71, 255, 255);
-        if let Some(r) = Rect::from_xywh(12.0, cur_y + sb_h - 2.0, sb_w, 2.0) {
+        if let Some(r) = Rect::from_xywh(14.0, cur_y + sb_h - 2.0, (sb_w - 4.0).max(1.0), 2.0) {
             pixmap.fill_rect(r, &sborder_paint, Transform::identity(), None);
         }
 
@@ -756,27 +835,191 @@ impl ChatRenderer {
         let visible_items = ((height - cur_y).max(0.0) / item_h).ceil() as usize;
         let start_idx = ui.search_scroll_offset.min(ui.search_results.len());
         let end_idx = (start_idx + visible_items).min(ui.search_results.len());
+        let query_trimmed = ui.search_query.trim();
 
         for (i, res) in ui.search_results[start_idx..end_idx].iter().enumerate() {
             let item_y = cur_y + (i as f32 * item_h);
 
-            // Card background
+            // Card background (rounded)
             let mut card_paint = Paint::default();
             card_paint.set_color_rgba8(20, 22, 30, 240);
             if let Some(r) = Rect::from_xywh(12.0, item_y, width - 24.0, item_h - 4.0) {
-                pixmap.fill_rect(r, &card_paint, Transform::identity(), None);
+                Self::fill_rounded_rect(pixmap, r, 5.0, &card_paint, None);
             }
 
-            // Timestamp badge [01:23:45]
-            self.draw_text(pixmap, &res.time_str, 18.0, item_y + 5.0, 11.0, [0, 255, 200, 255]);
+            // Timestamp pill badge [01:23:45]
+            let mut ts_pill_paint = Paint::default();
+            ts_pill_paint.set_color_rgba8(22, 46, 52, 255);
+            if let Some(pill_r) = Rect::from_xywh(16.0, item_y + 4.0, 62.0, 16.0) {
+                Self::fill_rounded_rect(pixmap, pill_r, 4.0, &ts_pill_paint, None);
+            }
+            let ts_w = self.layouter.measure_text_width(&res.time_str, 10.5);
+            let ts_x = 16.0 + (62.0 - ts_w).max(0.0) * 0.5;
+            self.draw_text(pixmap, &res.time_str, ts_x, item_y + 5.0, 10.5, [0, 255, 200, 255]);
 
-            // Author nick
+            // Author nick (with optional match highlight)
             let nick_col = crate::layout::parse_hex_color(&res.color_hex, &res.author);
+            self.draw_text_match_highlight(pixmap, &res.author, query_trimmed, 84.0, item_y + 5.0, 11.0, TextStyle::Nickname);
             self.draw_styled_text(pixmap, &res.author, 84.0, item_y + 5.0, 11.0, nick_col, TextStyle::Nickname, None);
 
-            // Text preview
-            let snip: String = res.text.chars().take(40).collect();
+            // Text preview truncated to card width with ellipsis & match highlight
+            let max_text_w = (width - 96.0).max(40.0);
+            let snip = self.truncate_text_to_width(&res.text, max_text_w, 11.0, TextStyle::Message);
+            self.draw_text_match_highlight(pixmap, &snip, query_trimmed, 84.0, item_y + 20.0, 11.0, TextStyle::Message);
             self.draw_styled_text(pixmap, &snip, 84.0, item_y + 20.0, 11.0, [220, 220, 230, 255], TextStyle::Message, None);
+        }
+
+        if ui.search_results.len() > visible_items && visible_items > 0 {
+            self.draw_scrollbar(
+                pixmap,
+                SEARCH_RESULTS_TOP,
+                (height - 6.0).max(SEARCH_RESULTS_TOP + 10.0),
+                ui.search_results.len() as f32,
+                visible_items as f32,
+                start_idx as f32,
+            );
+        }
+    }
+
+    fn fill_rounded_rect(
+        pixmap: &mut Pixmap,
+        rect: Rect,
+        radius: f32,
+        paint: &Paint,
+        mask: Option<&Mask>,
+    ) {
+        let w = rect.width();
+        let h = rect.height();
+        let r = radius.clamp(0.0, (w * 0.5).min(h * 0.5));
+        if r <= 0.5 {
+            pixmap.fill_rect(rect, paint, Transform::identity(), mask);
+            return;
+        }
+        let x0 = rect.left();
+        let y0 = rect.top();
+        let x1 = rect.right();
+        let y1 = rect.bottom();
+
+        let mut pb = tiny_skia::PathBuilder::new();
+        pb.move_to(x0 + r, y0);
+        pb.line_to(x1 - r, y0);
+        pb.quad_to(x1, y0, x1, y0 + r);
+        pb.line_to(x1, y1 - r);
+        pb.quad_to(x1, y1, x1 - r, y1);
+        pb.line_to(x0 + r, y1);
+        pb.quad_to(x0, y1, x0, y1 - r);
+        pb.line_to(x0, y0 + r);
+        pb.quad_to(x0, y0, x0 + r, y0);
+        pb.close();
+
+        if let Some(path) = pb.finish() {
+            pixmap.fill_path(&path, paint, tiny_skia::FillRule::Winding, Transform::identity(), mask);
+        } else {
+            pixmap.fill_rect(rect, paint, Transform::identity(), mask);
+        }
+    }
+
+    fn draw_scrollbar(
+        &self,
+        pixmap: &mut Pixmap,
+        track_top: f32,
+        track_bottom: f32,
+        total: f32,
+        visible: f32,
+        offset: f32,
+    ) {
+        let track_h = track_bottom - track_top;
+        if track_h <= 12.0 || total <= visible || total <= 0.0 {
+            return;
+        }
+        let bar_x = (pixmap.width() as f32 - 5.0).max(0.0);
+        let mut track_paint = Paint::default();
+        track_paint.set_color_rgba8(255, 255, 255, 28);
+        if let Some(tr) = Rect::from_xywh(bar_x, track_top, 3.0, track_h) {
+            Self::fill_rounded_rect(pixmap, tr, 1.5, &track_paint, None);
+        }
+
+        let ratio = (visible / total).clamp(0.08, 1.0);
+        let thumb_h = (track_h * ratio).max(16.0).min(track_h);
+        let max_offset = (total - visible).max(1.0);
+        let progress = (offset / max_offset).clamp(0.0, 1.0);
+        let thumb_y = track_top + (track_h - thumb_h) * progress;
+
+        let mut thumb_paint = Paint::default();
+        thumb_paint.set_color_rgba8(145, 71, 255, 190);
+        if let Some(th) = Rect::from_xywh(bar_x, thumb_y, 3.0, thumb_h) {
+            Self::fill_rounded_rect(pixmap, th, 1.5, &thumb_paint, None);
+        }
+    }
+
+    fn truncate_text_to_width(&self, text: &str, max_width: f32, font_size: f32, style: TextStyle) -> String {
+        if self.layouter.measure_styled_text_width(text, font_size, style) <= max_width {
+            return text.to_string();
+        }
+        let ellipsis = "…";
+        let ellipsis_w = self.layouter.measure_styled_text_width(ellipsis, font_size, style);
+        let target_w = (max_width - ellipsis_w).max(0.0);
+        let mut out = String::new();
+        let mut cur_w = 0.0;
+        let mut prev = None;
+        for c in text.chars() {
+            let kern = prev.map(|p| self.layouter.kerning(p, c, font_size, style)).unwrap_or(0.0);
+            let adv = self.layouter.font_for_char(c, style).metrics(c, font_size).advance_width;
+            if cur_w + kern + adv > target_w {
+                break;
+            }
+            cur_w += kern + adv;
+            out.push(c);
+            prev = Some(c);
+        }
+        out.push('…');
+        out
+    }
+
+    fn draw_text_match_highlight(
+        &self,
+        pixmap: &mut Pixmap,
+        text: &str,
+        query: &str,
+        start_x: f32,
+        baseline_y: f32,
+        font_size: f32,
+        style: TextStyle,
+    ) {
+        if query.is_empty() || text.is_empty() {
+            return;
+        }
+        let text_lower: Vec<char> = text.to_lowercase().chars().collect();
+        let query_lower: Vec<char> = query.to_lowercase().chars().collect();
+        if query_lower.is_empty() || query_lower.len() > text_lower.len() {
+            return;
+        }
+
+        let match_pos = text_lower
+            .windows(query_lower.len())
+            .position(|w| w == query_lower.as_slice());
+
+        if let Some(char_start) = match_pos {
+            let chars: Vec<char> = text.chars().collect();
+            let char_end = (char_start + query_lower.len()).min(chars.len());
+            if char_start < char_end {
+                let prefix: String = chars[..char_start].iter().collect();
+                let matched: String = chars[char_start..char_end].iter().collect();
+                let offset_x = self.layouter.measure_styled_text_width(&prefix, font_size, style);
+                let match_w = self.layouter.measure_styled_text_width(&matched, font_size, style);
+                if match_w > 0.0 {
+                    let mut hl_paint = Paint::default();
+                    hl_paint.set_color_rgba8(145, 71, 255, 95);
+                    if let Some(r) = Rect::from_xywh(
+                        start_x + offset_x - 1.5,
+                        baseline_y - 1.0,
+                        match_w + 3.0,
+                        font_size + 3.0,
+                    ) {
+                        Self::fill_rounded_rect(pixmap, r, 3.0, &hl_paint, None);
+                    }
+                }
+            }
         }
     }
 
@@ -792,14 +1035,14 @@ impl ChatRenderer {
         let mut paint = Paint::default();
         paint.set_color_rgba8(bg_color[0], bg_color[1], bg_color[2], bg_color[3]);
         if let Some(r) = Rect::from_xywh(hb.x, hb.y, hb.w, hb.h) {
-            pixmap.fill_rect(r, &paint, Transform::identity(), None);
+            Self::fill_rounded_rect(pixmap, r, 4.0, &paint, None);
         }
 
         // Border if active
         if is_active {
             let mut border_paint = Paint::default();
             border_paint.set_color_rgba8(191, 148, 255, 255);
-            if let Some(r) = Rect::from_xywh(hb.x, hb.y + hb.h - 2.0, hb.w, 2.0) {
+            if let Some(r) = Rect::from_xywh(hb.x + 2.0, hb.y + hb.h - 2.0, (hb.w - 4.0).max(1.0), 2.0) {
                 pixmap.fill_rect(r, &border_paint, Transform::identity(), None);
             }
         }
@@ -886,6 +1129,10 @@ impl ChatRenderer {
 
     pub fn btn_badges() -> HitBox {
         HitBox::new(136.0, 182.0, 112.0, 22.0)
+    }
+
+    pub fn btn_zebra(width: f32) -> HitBox {
+        HitBox::new(160.0, 368.0, (width - 172.0).max(70.0), 22.0)
     }
 
     pub fn btn_text_effect(width: f32) -> HitBox {

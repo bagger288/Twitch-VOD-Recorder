@@ -103,6 +103,40 @@ fn calc_directory_size(dir: &Path) -> u64 {
     total_bytes
 }
 
+fn copy_to_clipboard(text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    #[cfg(windows)]
+    {
+        use std::io::Write;
+        use std::os::windows::process::CommandExt;
+        use std::process::{Command, Stdio};
+        let mut cmd = Command::new("clip");
+        cmd.stdin(Stdio::piped()).creation_flags(0x08000000);
+        if let Ok(mut child) = cmd.spawn() {
+            if let Some(mut stdin) = child.stdin.take() {
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
+        }
+    }
+    #[cfg(not(windows))]
+    {
+        use std::io::Write;
+        use std::process::{Command, Stdio};
+        for (bin, args) in [("wl-copy", &[][..]), ("xclip", &["-selection", "clipboard"][..])] {
+            if let Ok(mut child) = Command::new(bin).args(args).stdin(Stdio::piped()).spawn() {
+                if let Some(mut stdin) = child.stdin.take() {
+                    let _ = stdin.write_all(text.as_bytes());
+                }
+                let _ = child.wait();
+                break;
+            }
+        }
+    }
+}
+
 fn check_tool_paths(ui: &MainWindow, sl_path: &str, mpv_path: &str) {
     // 1. Streamlink
     let p_sl = Path::new(sl_path);
@@ -462,6 +496,19 @@ fn main() -> Result<(), slint::PlatformError> {
 
                 if let Some(sessions) = map.get(&sel_ch) {
                     ui.set_recordings(sessions_to_model(sessions));
+                    let cur_rec = ui.get_selected_recording_id().to_string();
+                    let valid_rec = !cur_rec.is_empty()
+                        && sessions.iter().any(|s| s.dir.to_string_lossy() == cur_rec);
+                    if !valid_rec {
+                        let first_id = sessions
+                            .first()
+                            .map(|s| s.dir.to_string_lossy().to_string())
+                            .unwrap_or_default();
+                        ui.set_selected_recording_id(first_id.into());
+                    }
+                } else {
+                    ui.set_recordings(ModelRc::from(Rc::new(VecModel::<RecordingItem>::default())));
+                    ui.set_selected_recording_id("".into());
                 }
             }
         }
@@ -480,6 +527,14 @@ fn main() -> Result<(), slint::PlatformError> {
                 let map = sessions_arc.lock().unwrap();
                 if let Some(sessions) = map.get(ch_name.as_str()) {
                     ui.set_recordings(sessions_to_model(sessions));
+                    let first_id = sessions
+                        .first()
+                        .map(|s| s.dir.to_string_lossy().to_string())
+                        .unwrap_or_default();
+                    ui.set_selected_recording_id(first_id.into());
+                } else {
+                    ui.set_recordings(ModelRc::from(Rc::new(VecModel::<RecordingItem>::default())));
+                    ui.set_selected_recording_id("".into());
                 }
             }
         });
@@ -507,11 +562,106 @@ fn main() -> Result<(), slint::PlatformError> {
     // Open session folder
     {
         let handle_weak = handle.clone();
+        let sessions_arc = sessions_cache.clone();
         main_window.on_open_session_folder(move || {
             if let Some(ui) = handle_weak.upgrade() {
                 let id = ui.get_selected_recording_id().to_string();
                 if !id.is_empty() {
                     let _ = open::that(Path::new(&id));
+                } else {
+                    let sel_ch = ui.get_selected_channel().to_string();
+                    let map = sessions_arc.lock().unwrap();
+                    if let Some(first) = map.get(&sel_ch).and_then(|s| s.first()) {
+                        let _ = open::that(&first.dir);
+                    }
+                }
+            }
+        });
+    }
+
+    // Download missing emotes for selected session
+    {
+        let handle_weak = handle.clone();
+        let root = root_dir.clone();
+        let cfg_arc = config_arc.clone();
+        let sessions_arc = sessions_cache.clone();
+        let refresh_fn = refresh_ui_records.clone();
+
+        main_window.on_download_missing_emotes(move || {
+            if let Some(ui) = handle_weak.upgrade() {
+                if ui.get_emotes_busy() {
+                    return;
+                }
+                let sel_id = ui.get_selected_recording_id().to_string();
+                let sel_ch = ui.get_selected_channel().to_string();
+
+                let target_session = {
+                    let map = sessions_arc.lock().unwrap();
+                    map.get(&sel_ch).and_then(|sessions| {
+                        if !sel_id.is_empty() {
+                            sessions.iter().find(|s| s.dir.to_string_lossy() == sel_id).cloned()
+                        } else {
+                            sessions.first().cloned()
+                        }
+                    })
+                };
+
+                if let Some(s_clone) = target_session {
+                    ui.set_emotes_busy(true);
+                    let cfg = cfg_arc.lock().unwrap().clone();
+                    let root_clone = root.clone();
+                    let cache_root = root_clone.join(&cfg.emote_cache_dir);
+                    let h = handle_weak.clone();
+                    let rf = refresh_fn.clone();
+
+                    std::thread::spawn(move || {
+                        let rt = tokio::runtime::Builder::new_current_thread()
+                            .enable_all()
+                            .build()
+                            .unwrap();
+
+                        let h_for_log = h.clone();
+                        let log_cb = move |msg: String| {
+                            let h_inner = h_for_log.clone();
+                            let _ = slint::invoke_from_event_loop(move || {
+                                if let Some(ui) = h_inner.upgrade() {
+                                    let mut text = ui.get_imp_console_text().to_string();
+                                    text.push_str(&msg);
+                                    text.push('\n');
+                                    ui.set_imp_console_text(text.into());
+                                }
+                            });
+                        };
+
+                        log_cb(format!(
+                            "[Emotes] Ручное кэширование эмоутов и значков для сессии {}...",
+                            s_clone.dir.display()
+                        ));
+                        let _ = rt.block_on(emotes::ensure_session_emotes(
+                            &s_clone.dir,
+                            &s_clone.channel,
+                            None,
+                            if cfg.twitch_client_id.trim().is_empty() {
+                                None
+                            } else {
+                                Some(cfg.twitch_client_id.as_str())
+                            },
+                            if cfg.twitch_app_token.trim().is_empty() {
+                                None
+                            } else {
+                                Some(cfg.twitch_app_token.as_str())
+                            },
+                            &cache_root,
+                            log_cb,
+                        ));
+
+                        let _ = slint::invoke_from_event_loop(move || {
+                            if let Some(ui) = h.upgrade() {
+                                ui.set_emotes_busy(false);
+                            }
+                            rf();
+                        });
+                    });
                 }
             }
         });
@@ -710,13 +860,34 @@ fn main() -> Result<(), slint::PlatformError> {
         });
     }
 
-    // Clear PC Agent console
+    // Console clear & copy callbacks
     {
         let handle_weak = handle.clone();
         main_window.on_clear_pc_agent_console(move || {
             if let Some(ui) = handle_weak.upgrade() {
                 ui.set_agent_console_text("".into());
             }
+        });
+    }
+    {
+        let handle_weak = handle.clone();
+        main_window.on_clear_import_console(move || {
+            if let Some(ui) = handle_weak.upgrade() {
+                ui.set_imp_console_text("".into());
+            }
+        });
+    }
+    {
+        let handle_weak = handle.clone();
+        main_window.on_clear_recorder_console(move || {
+            if let Some(ui) = handle_weak.upgrade() {
+                ui.set_rec_console_text("".into());
+            }
+        });
+    }
+    {
+        main_window.on_copy_console_text(move |text| {
+            copy_to_clipboard(text.as_str());
         });
     }
 

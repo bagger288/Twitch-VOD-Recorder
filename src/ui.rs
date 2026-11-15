@@ -123,6 +123,7 @@ pub struct UiState {
     pub minimized_position: Option<(i32, i32)>,
     pub emotes_enabled: bool,
     pub badges_enabled: bool,
+    pub zebra_striping: bool,
     pub offset_ms: i64,
     pub font_size: f32,
     pub panel_width: u32,
@@ -158,6 +159,7 @@ impl Default for UiState {
             minimized_position: None,
             emotes_enabled: true,
             badges_enabled: true,
+            zebra_striping: true,
             offset_ms: 0,
             font_size: 14.0,
             panel_width: 340,
@@ -257,6 +259,14 @@ impl UiState {
         }
         if let Some(enabled) = val.get("badges_enabled").and_then(|v| v.as_bool()) {
             self.badges_enabled = enabled;
+            matched = true;
+        }
+        if let Some(zebra) = val
+            .get("zebra_striping")
+            .or_else(|| val.get("chat_zebra_striping"))
+            .and_then(|v| v.as_bool())
+        {
+            self.zebra_striping = zebra;
             matched = true;
         }
         if let Some(effect) = val

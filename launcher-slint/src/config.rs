@@ -90,6 +90,9 @@ pub struct AppConfig {
     pub badges_enabled: Option<bool>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub zebra_striping: Option<bool>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub chat_text_effect: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -140,6 +143,7 @@ impl Default for AppConfig {
             chat_enabled: None,
             emotes_enabled: None,
             badges_enabled: None,
+            zebra_striping: None,
             chat_text_effect: None,
             chat_outline_width: None,
             chat_minimized_position: None,

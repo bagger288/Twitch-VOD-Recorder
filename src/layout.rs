@@ -44,6 +44,19 @@ pub struct LayoutMessage {
     pub tokens: Vec<LayoutToken>,
 }
 
+impl LayoutMessage {
+    pub fn is_gap(&self) -> bool {
+        matches!(
+            self.tokens.first(),
+            Some(LayoutToken::Text {
+                color: [255, 136, 0, 255],
+                style: TextStyle::Message,
+                ..
+            })
+        )
+    }
+}
+
 #[derive(Debug)]
 enum ContentToken {
     Text(String),

@@ -431,6 +431,7 @@ impl PluginState {
         map.insert("chat_enabled".to_string(), serde_json::json!(self.ui.chat_enabled));
         map.insert("emotes_enabled".to_string(), serde_json::json!(self.ui.emotes_enabled));
         map.insert("badges_enabled".to_string(), serde_json::json!(self.ui.badges_enabled));
+        map.insert("zebra_striping".to_string(), serde_json::json!(self.ui.zebra_striping));
         map.insert("chat_text_effect".to_string(), serde_json::json!(self.ui.text_effect));
         map.insert("chat_outline_width".to_string(), serde_json::json!(self.ui.outline_width));
         map.insert("chat_minimized_position".to_string(), serde_json::json!(self.ui.minimized_position));
@@ -770,6 +771,12 @@ impl PluginState {
             return;
         }
         let ry = ry + self.ui.settings_scroll_offset.min(max_settings_scroll(self.ui.panel_height));
+        if ChatRenderer::btn_zebra(self.ui.panel_width as f32).contains(rx, ry) {
+            self.ui.zebra_striping = !self.ui.zebra_striping;
+            self.save_chat_settings();
+            self.update_frame();
+            return;
+        }
         if ChatRenderer::btn_text_effect(self.ui.panel_width as f32).contains(rx, ry) {
             self.ui.text_effect = self.ui.text_effect.next();
             self.save_chat_settings();
@@ -984,6 +991,11 @@ impl PluginState {
                     }
                     "twitch_emotes" => {
                         self.ui.emotes_enabled = val.eq_ignore_ascii_case("yes");
+                    }
+                    "twitch_zebra" | "zebra_striping" => {
+                        self.ui.zebra_striping = val.eq_ignore_ascii_case("yes")
+                            || val.eq_ignore_ascii_case("true")
+                            || val == "1";
                     }
                     "twitch_font_size" => {
                         if let Ok(fs) = val.parse::<f32>() {
