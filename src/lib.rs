@@ -143,8 +143,17 @@ fn get_win32_osd_cursor_pos(mpv: &MpvHandle) -> Option<(i32, i32)> {
     }
 }
 
-/// Builds keybindings string for the search input section in mpv
-fn build_search_section_string() -> String {
+/// Builds keybindings string for the search input section in mpv.
+///
+/// Note on Cyrillic case handling:
+/// In mpv's `mp_normalize_keycode()` (`input/keycodes.c`), the `Shift+` modifier is stripped
+/// from all printable Unicode code points (`code >= 32 && code < MP_KEY_BASE`), while automatic
+/// case conversion is only performed for ASCII `'a'..='z'`. Consequently, a binding like
+/// `Shift+а` normalizes to lowercase `'а'` (`U+0430`) and would overwrite the lowercase `'а'`
+/// binding with uppercase `'А'`. Because OS keyboard translation (`ToUnicode` on Windows, XKB
+/// on Linux) already emits uppercase `'А'` (`U+0410`) when Shift or CapsLock is active, binding
+/// `{low}` and `{up}` directly (plus `ANY_UNICODE` fallback) preserves both lowercase and uppercase.
+fn build_search_section_string(client_name: &str) -> String {
     let mut s = String::with_capacity(8192);
 
     // Latin letters a-z and A-Z
@@ -152,60 +161,98 @@ fn build_search_section_string() -> String {
         let ch = b as char;
         let up = ch.to_ascii_uppercase();
         s.push_str(&format!("{ch} script-message twitch_chat_key {ch}\n"));
-        s.push_str(&format!("Shift+{ch} script-message twitch_chat_key {up}\n"));
+        s.push_str(&format!("{up} script-message twitch_chat_key {up}\n"));
     }
 
-    // Digits 0-9
+    // Digits 0-9 and Numpad digits
     for d in b'0'..=b'9' {
         let dh = d as char;
         s.push_str(&format!("{dh} script-message twitch_chat_key {dh}\n"));
+        s.push_str(&format!("KP{dh} script-message twitch_chat_key {dh}\n"));
     }
+    s.push_str("KP_DEC script-message twitch_chat_key .\n");
 
     // Printable symbols
     s.push_str("SPACE script-message twitch_chat_space\n");
-    s.push_str("- script-message twitch_chat_key -\n");
-    s.push_str("_ script-message twitch_chat_key _\n");
-    s.push_str(". script-message twitch_chat_key .\n");
-    s.push_str(", script-message twitch_chat_key ,\n");
-    s.push_str("! script-message twitch_chat_key !\n");
-    s.push_str("? script-message twitch_chat_key ?\n");
-    s.push_str("/ script-message twitch_chat_key /\n");
-    s.push_str("@ script-message twitch_chat_key @\n");
-    s.push_str("# script-message twitch_chat_key #\n");
-    s.push_str(": script-message twitch_chat_key :\n");
-    s.push_str("; script-message twitch_chat_key ;\n");
-    s.push_str("+ script-message twitch_chat_key +\n");
-    s.push_str("= script-message twitch_chat_key =\n");
-    s.push_str("* script-message twitch_chat_key *\n");
-    s.push_str("( script-message twitch_chat_key (\n");
-    s.push_str(") script-message twitch_chat_key )\n");
-    s.push_str("[ script-message twitch_chat_key [\n");
-    s.push_str("] script-message twitch_chat_key ]\n");
+    for sym in [
+        "-", "_", ".", ",", "!", "?", "/", "@", ":", ";", "+", "=", "*", "(", ")", "[", "]", "{",
+        "}", "<", ">", "|",
+    ] {
+        s.push_str(&format!("{sym} script-message twitch_chat_key {sym}\n"));
+    }
+    s.push_str("SHARP script-message twitch_chat_key #\n");
 
-    // Cyrillic letters (Russian lowercase & uppercase)
+    // Cyrillic letters (Russian lowercase & uppercase, without Shift+{low} which mpv normalizes to {low})
     const CYR_LOWER: &str = "абвгдеёжзийклмнопрстуфхцчшщъыьэюя";
     const CYR_UPPER: &str = "АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯ";
     for (low, up) in CYR_LOWER.chars().zip(CYR_UPPER.chars()) {
         s.push_str(&format!("{low} script-message twitch_chat_key {low}\n"));
         s.push_str(&format!("{up} script-message twitch_chat_key {up}\n"));
-        s.push_str(&format!("Shift+{low} script-message twitch_chat_key {up}\n"));
     }
 
     // Control keys
     s.push_str("BS script-message twitch_chat_bs\n");
+    s.push_str("Shift+BS script-message twitch_chat_bs\n");
     s.push_str("ESC script-message twitch_chat_esc\n");
     s.push_str("ENTER script-message twitch_chat_enter\n");
+    s.push_str("KP_ENTER script-message twitch_chat_enter\n");
 
     // Suppress player navigation keys during search so they never seek or trigger actions
-    s.push_str("LEFT script-message twitch_chat_ignore\n");
-    s.push_str("RIGHT script-message twitch_chat_ignore\n");
-    s.push_str("UP script-message twitch_chat_ignore\n");
-    s.push_str("DOWN script-message twitch_chat_ignore\n");
-    s.push_str("PGUP script-message twitch_chat_ignore\n");
-    s.push_str("PGDWN script-message twitch_chat_ignore\n");
-    s.push_str("Tab script-message twitch_chat_ignore\n");
+    for nav_key in [
+        "LEFT",
+        "RIGHT",
+        "UP",
+        "DOWN",
+        "Shift+LEFT",
+        "Shift+RIGHT",
+        "Shift+UP",
+        "Shift+DOWN",
+        "Ctrl+LEFT",
+        "Ctrl+RIGHT",
+        "PGUP",
+        "PGDWN",
+        "HOME",
+        "END",
+        "Tab",
+        "Shift+Tab",
+        "DEL",
+        "INS",
+    ] {
+        s.push_str(&format!("{nav_key} script-message twitch_chat_ignore\n"));
+    }
+
+    // Catch-all for any other printable Unicode character or layout symbol
+    s.push_str(&format!("ANY_UNICODE script-binding {client_name}/twitch_chat_text\n"));
 
     s
+}
+
+/// Extracts printable UTF-8 text from an mpv `key-binding` client-message for `twitch_chat_text`.
+fn extract_key_binding_text(args: &[String]) -> Option<&str> {
+    if args.first().map(String::as_str) != Some("key-binding") {
+        return None;
+    }
+    if args.get(1).map(String::as_str) != Some("twitch_chat_text") {
+        return None;
+    }
+    let state = args.get(2)?.as_str();
+    if !state.starts_with('d') && !state.starts_with('r') && !state.starts_with('p') {
+        return None;
+    }
+    if let Some(key_text) = args.get(4).map(String::as_str) {
+        if !key_text.is_empty() && key_text.chars().all(|c| !c.is_control()) {
+            return Some(key_text);
+        }
+    }
+    if let Some(key_name) = args.get(3).map(String::as_str) {
+        let mut chars = key_name.chars();
+        if let (Some(c), None) = (chars.next(), chars.next()) {
+            if !c.is_control() {
+                return Some(key_name);
+            }
+        }
+    }
+    None
 }
 
 struct PluginState {
@@ -289,7 +336,8 @@ impl PluginState {
 
     fn init_search_section(&mut self) {
         if !self.search_section_defined {
-            let section_str = build_search_section_string();
+            let client_name = self.mpv.client_name();
+            let section_str = build_search_section_string(&client_name);
             self.mpv.command(&[
                 "define-section",
                 "twitch_chat_search",
@@ -307,11 +355,9 @@ impl PluginState {
         let should_enable = self.ui.chat_enabled && !self.ui.minimized && self.ui.current_view == UiView::Search;
         if should_enable && !self.search_section_enabled {
             self.mpv.command(&["enable-section", "twitch_chat_search", "allow-hide-cursor+allow-vo-dragging"]);
-            self.mpv.command(&["script-message", "twitch_search_active", "1"]);
             self.search_section_enabled = true;
         } else if !should_enable && self.search_section_enabled {
             self.mpv.command(&["disable-section", "twitch_chat_search"]);
-            self.mpv.command(&["script-message", "twitch_search_active", "0"]);
             self.search_section_enabled = false;
         }
     }
@@ -1416,6 +1462,10 @@ pub unsafe extern "C" fn mpv_open_cplugin(ctx: MpvHandleRaw) -> c_int {
                                     if let Some(key_state) = args.get(2) {
                                         state.on_mouse_binding(key_state);
                                     }
+                                } else if let Some(text) = extract_key_binding_text(&args) {
+                                    state.ui.search_query.push_str(text);
+                                    state.perform_search();
+                                    state.update_frame();
                                 }
                             }
                             "click" | "twitch_chat/click" | "twitch_chat_click" => {
@@ -1602,5 +1652,52 @@ mod tests {
         assert_eq!(saved_val["chat_text_effect"], "shadow");
 
         let _ = std::fs::remove_dir_all(&temp_dir);
+    }
+
+    #[test]
+    fn search_section_preserves_cyrillic_lowercase_and_uppercase_without_shift_overwrite() {
+        let section = build_search_section_string("twitch_chat");
+        assert!(section.contains("\nа script-message twitch_chat_key а\n") || section.starts_with("а script-message twitch_chat_key а\n"));
+        assert!(section.contains("\nА script-message twitch_chat_key А\n"));
+        assert!(section.contains("\nя script-message twitch_chat_key я\n"));
+        assert!(section.contains("\nЯ script-message twitch_chat_key Я\n"));
+        assert!(section.contains("\nё script-message twitch_chat_key ё\n"));
+        assert!(section.contains("\nЁ script-message twitch_chat_key Ё\n"));
+        // Must NEVER include "Shift+а" etc., because mpv's mp_normalize_keycode strips Shift+
+        // on non-ASCII chars and would overwrite lowercase 'а' with uppercase 'А'.
+        assert!(!section.contains("Shift+а "));
+        assert!(!section.contains("Shift+я "));
+        assert!(!section.contains("Shift+ё "));
+        assert!(section.contains("ANY_UNICODE script-binding twitch_chat/twitch_chat_text\n"));
+    }
+
+    #[test]
+    fn extract_key_binding_text_handles_down_repeat_and_ignores_release() {
+        let down = vec![
+            "key-binding".into(),
+            "twitch_chat_text".into(),
+            "d-".into(),
+            "ф".into(),
+            "ф".into(),
+        ];
+        assert_eq!(extract_key_binding_text(&down), Some("ф"));
+
+        let repeat_upper = vec![
+            "key-binding".into(),
+            "twitch_chat_text".into(),
+            "r-".into(),
+            "Ф".into(),
+            "Ф".into(),
+        ];
+        assert_eq!(extract_key_binding_text(&repeat_upper), Some("Ф"));
+
+        let release = vec![
+            "key-binding".into(),
+            "twitch_chat_text".into(),
+            "u-".into(),
+            "ф".into(),
+            "ф".into(),
+        ];
+        assert_eq!(extract_key_binding_text(&release), None);
     }
 }

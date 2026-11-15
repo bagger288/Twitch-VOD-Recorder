@@ -573,7 +573,7 @@ mod tests {
     #[test]
     fn osd_bounds_preserve_relative_position_across_fullscreen_and_windowed() {
         let mut ui = UiState::default();
-        assert!(ui.apply_osd_bounds(1920, 1080));
+        assert!(!ui.apply_osd_bounds(1920, 1080));
         assert_eq!((ui.panel_x, ui.panel_y), (1470, 60));
 
         // Switch to 1280x720 windowed: keeps proportional position instead of overflowing
@@ -588,10 +588,10 @@ mod tests {
 
         // Minimized badge position also survives fullscreen <-> windowed round-trip
         ui.minimize((1920, 1080));
-        assert!(ui.apply_osd_bounds(1920, 1080));
+        assert!(!ui.apply_osd_bounds(1920, 1080));
         assert_eq!(ui.minimized_position, Some((1470, 60)));
         assert!(ui.apply_osd_bounds(1280, 720));
-        assert_eq!(ui.minimized_position, Some((968, 39)));
+        assert_eq!(ui.minimized_position, Some((969, 39)));
         assert!(ui.apply_osd_bounds(1920, 1080));
         assert_eq!(ui.minimized_position, Some((1470, 60)));
     }

@@ -39,7 +39,6 @@ pub fn launch_player(
     let rust_dll_root = project_root.join("twitch_chat.dll");
     let rust_dll_target = project_root.join("target").join("release").join("twitch_chat.dll");
     let rust_dll_build = project_root.join("build").join("twitch_chat.dll");
-    let lua_input_script = project_root.join("twitch_chat_input.lua");
 
     let chosen_script = if rust_dll_root.is_file() {
         rust_dll_root
@@ -60,10 +59,6 @@ pub fn launch_player(
     cmd.arg(format!("--input-ipc-server={}", ipc_socket));
     cmd.arg("--keep-open=yes");
     cmd.arg(format!("--log-file={}", mpv_log.display()));
-
-    if lua_input_script.is_file() {
-        cmd.arg(format!("--script={}", lua_input_script.display()));
-    }
 
     // Add video parts
     for vp in &session.video_parts {
