@@ -1248,12 +1248,15 @@ fn main() -> Result<(), slint::PlatformError> {
             }
 
             if ch.is_empty() {
-                if let Some(first) = video_paths.first() {
-                    let (detected_ch, _) = records::detect_channel_and_date(first);
+                for vp in &video_paths {
+                    let (detected_ch, _) = records::detect_channel_and_date(vp);
                     if let Some(c) = detected_ch {
-                        ch = c;
-                        if let Some(ui) = handle_weak.upgrade() {
-                            ui.set_imp_channel(ch.clone().into());
+                        if !c.is_empty() {
+                            ch = c;
+                            if let Some(ui) = handle_weak.upgrade() {
+                                ui.set_imp_channel(ch.clone().into());
+                            }
+                            break;
                         }
                     }
                 }
@@ -1266,18 +1269,32 @@ fn main() -> Result<(), slint::PlatformError> {
                 return;
             }
 
-            let records_dir = {
+            let (records_dir, ffmpeg_path) = {
                 let cfg = cfg_arc.lock().unwrap();
-                root.join(&cfg.records_dir)
+                (root.join(&cfg.records_dir), cfg.ffmpeg_path.clone())
             };
 
             let mut parsed_dates = Vec::new();
             for part in dates_str.split(',') {
                 let trimmed = part.trim();
-                if let Ok(d) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d") {
-                    parsed_dates.push(d);
+                if let Ok(d) = chrono::NaiveDate::parse_from_str(trimmed, "%Y-%m-%d")
+                    .or_else(|_| chrono::NaiveDate::parse_from_str(trimmed, "%d.%m.%Y"))
+                    .or_else(|_| chrono::NaiveDate::parse_from_str(trimmed, "%d-%m-%Y"))
+                {
+                    if !parsed_dates.contains(&d) {
+                        parsed_dates.push(d);
+                    }
                 }
             }
+            for vp in &video_paths {
+                if let Some(d) = records::detect_date_from_file_or_stem(vp) {
+                    if !parsed_dates.contains(&d) {
+                        parsed_dates.push(d);
+                    }
+                }
+            }
+            parsed_dates.sort();
+            parsed_dates.dedup();
             if parsed_dates.is_empty() {
                 parsed_dates.push(chrono::Utc::now().date_naive());
             }
@@ -1296,6 +1313,8 @@ fn main() -> Result<(), slint::PlatformError> {
             };
 
             if let Some(ui) = handle_weak.upgrade() {
+                let dates_display: Vec<String> = parsed_dates.iter().map(|d| d.format("%Y-%m-%d").to_string()).collect();
+                ui.set_imp_dates(dates_display.join(", ").into());
                 ui.set_imp_busy(true);
                 ui.set_imp_console_text(format!("Запуск импорта чата для канала {} (частей: {})...\n", ch, video_paths.len()).into());
             }
@@ -1333,6 +1352,7 @@ fn main() -> Result<(), slint::PlatformError> {
                     start_dt,
                     auto_detect,
                     records_dir,
+                    ffmpeg_path,
                 };
 
                 let cache_root = {

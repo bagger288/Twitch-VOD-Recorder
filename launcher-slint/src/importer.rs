@@ -55,6 +55,7 @@ pub struct ImportParams {
     pub start_dt: Option<DateTime<Utc>>,
     pub auto_detect: bool,
     pub records_dir: PathBuf,
+    pub ffmpeg_path: String,
 }
 
 /// Decode IRC tag escaped characters
@@ -440,10 +441,41 @@ fn detect_stream_start_ms(messages: &[ChatRecord], target_date: Option<NaiveDate
     )
 }
 
-/// Probe video duration in milliseconds using ffprobe
-pub fn probe_video_duration_ms(path: &Path) -> Option<i64> {
-    let output = std::process::Command::new("ffprobe")
-        .args(&[
+fn parse_ffmpeg_stderr_duration_ms(stderr: &str) -> Option<i64> {
+    static RE_DURATION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let re = RE_DURATION.get_or_init(|| {
+        regex::Regex::new(r"Duration:\s*(\d{2,}):(\d{2}):(\d{2}(?:\.\d+)?)").unwrap()
+    });
+    let caps = re.captures(stderr)?;
+    let hours: f64 = caps.get(1)?.as_str().parse().ok()?;
+    let mins: f64 = caps.get(2)?.as_str().parse().ok()?;
+    let secs: f64 = caps.get(3)?.as_str().parse().ok()?;
+    let total_sec = hours * 3600.0 + mins * 60.0 + secs;
+    if total_sec > 0.0 && total_sec.is_finite() {
+        Some((total_sec * 1000.0).round() as i64)
+    } else {
+        None
+    }
+}
+
+/// Probe video duration in milliseconds using ffprobe (with fallback to ffmpeg -i stderr)
+pub fn probe_video_duration_ms(path: &Path, ffmpeg_path: Option<&str>) -> Option<i64> {
+    let mut ffprobe_candidates: Vec<PathBuf> = Vec::new();
+    if let Some(fp) = ffmpeg_path.map(str::trim).filter(|s| !s.is_empty()) {
+        let fp_path = Path::new(fp);
+        if let Some(parent) = fp_path.parent() {
+            if !parent.as_os_str().is_empty() {
+                #[cfg(windows)]
+                ffprobe_candidates.push(parent.join("ffprobe.exe"));
+                ffprobe_candidates.push(parent.join("ffprobe"));
+            }
+        }
+    }
+    ffprobe_candidates.push(PathBuf::from("ffprobe"));
+
+    for bin in &ffprobe_candidates {
+        let mut cmd = std::process::Command::new(bin);
+        cmd.args([
             "-v",
             "error",
             "-show_entries",
@@ -451,26 +483,53 @@ pub fn probe_video_duration_ms(path: &Path) -> Option<i64> {
             "-of",
             "json",
         ])
-        .arg(path)
-        .output()
-        .ok()?;
+        .arg(path);
 
-    if !output.status.success() {
-        return None;
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+        }
+
+        if let Ok(output) = cmd.output() {
+            if output.status.success() {
+                if let Ok(json_val) = serde_json::from_slice::<Value>(&output.stdout) {
+                    if let Some(dur_str) = json_val
+                        .get("format")
+                        .and_then(|f| f.get("duration"))
+                        .and_then(|d| d.as_str())
+                    {
+                        if let Ok(dur_f) = dur_str.parse::<f64>() {
+                            if dur_f > 0.0 && dur_f.is_finite() {
+                                return Some((dur_f * 1000.0).round() as i64);
+                            }
+                        }
+                    }
+                }
+            }
+        }
     }
 
-    let json_val: Value = serde_json::from_slice(&output.stdout).ok()?;
-    let dur_str = json_val
-        .get("format")?
-        .get("duration")?
-        .as_str()?;
-
-    let dur_f: f64 = dur_str.parse().ok()?;
-    if dur_f > 0.0 && dur_f.is_finite() {
-        Some((dur_f * 1000.0).round() as i64)
-    } else {
-        None
+    // Fallback: parse `Duration: HH:MM:SS.xx` from `ffmpeg -i <path>` stderr
+    let ffmpeg_bin = ffmpeg_path
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or("ffmpeg");
+    let mut cmd = std::process::Command::new(ffmpeg_bin);
+    cmd.arg("-hide_banner").arg("-i").arg(path);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
     }
+    if let Ok(output) = cmd.output() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if let Some(ms) = parse_ffmpeg_stderr_duration_ms(&stderr) {
+            return Some(ms);
+        }
+    }
+
+    None
 }
 
 pub async fn fetch_day_log(
@@ -505,6 +564,55 @@ pub async fn fetch_day_log(
         .map_err(|e| format!("Не удалось разобрать JSON-ответ от архива {}: {}", url, e))
 }
 
+fn extract_and_normalize_messages(day_sources: &[(String, Value)]) -> Vec<ChatRecord> {
+    let mut all_messages = Vec::new();
+    for (_, source) in day_sources {
+        if let Some(messages) = source.get("messages").and_then(|m| m.as_array()) {
+            for item in messages {
+                if let Some(record) = normalize_message_item(item) {
+                    all_messages.push(record);
+                }
+            }
+        } else if let Some(arr) = source.as_array() {
+            for item in arr {
+                if let Some(record) = normalize_message_item(item) {
+                    all_messages.push(record);
+                }
+            }
+        }
+    }
+    all_messages
+}
+
+fn deduplicate_messages(messages: &mut Vec<ChatRecord>) {
+    messages.sort_by_key(|m| m.ts);
+    let mut seen_ids = HashSet::with_capacity(messages.len());
+    let mut unique = Vec::with_capacity(messages.len());
+    for msg in messages.drain(..) {
+        let key = if !msg.id.is_empty() {
+            format!("id:{}", msg.id)
+        } else {
+            format!("c:{}:{}:{}", msg.ts, msg.user, msg.text)
+        };
+        if seen_ids.insert(key) {
+            unique.push(msg);
+        }
+    }
+    *messages = unique;
+}
+
+/// Checks whether a stream that had messages near midnight UTC continues into the next day's log.
+fn is_midnight_continuation(last_prev_day_ts: i64, first_next_day_ts: i64, next_date: NaiveDate) -> bool {
+    let gap_ms = first_next_day_ts - last_prev_day_ts;
+    let first_early_utc = DateTime::from_timestamp_millis(first_next_day_ts)
+        .map(|dt| {
+            dt.date_naive() == next_date
+                && dt.time() <= chrono::NaiveTime::from_hms_opt(1, 0, 0).unwrap()
+        })
+        .unwrap_or(false);
+    first_early_utc || (0..=45 * 60 * 1000).contains(&gap_ms)
+}
+
 pub async fn run_import_task<F: Fn(String) + Send + 'static>(
     params: ImportParams,
     log_fn: F,
@@ -523,7 +631,12 @@ pub async fn run_import_task<F: Fn(String) + Send + 'static>(
         .map_err(|e| format!("Ошибка создания HTTP клиента: {}", e))?;
 
     let mut day_sources = Vec::new();
+    let mut attempted_dates: HashSet<NaiveDate> = HashSet::new();
+
     for date in &params.dates {
+        if !attempted_dates.insert(*date) {
+            continue;
+        }
         let y = date.format("%Y").to_string();
         let m = date.format("%m").to_string();
         let d = date.format("%d").to_string();
@@ -540,59 +653,43 @@ pub async fn run_import_task<F: Fn(String) + Send + 'static>(
     }
 
     log_fn("Парсинг и нормализация сообщений чата...".to_string());
-    let mut all_messages = Vec::new();
-
-    for (_, source) in &day_sources {
-        if let Some(messages) = source.get("messages").and_then(|m| m.as_array()) {
-            for item in messages {
-                if let Some(record) = normalize_message_item(item) {
-                    all_messages.push(record);
-                }
-            }
-        } else if let Some(arr) = source.as_array() {
-            for item in arr {
-                if let Some(record) = normalize_message_item(item) {
-                    all_messages.push(record);
-                }
-            }
-        }
-    }
+    let mut all_messages = extract_and_normalize_messages(&day_sources);
 
     if all_messages.is_empty() {
         return Err("В загруженных архивах не найдено ни одного сообщения.".to_string());
     }
 
-    // Sort by timestamp
-    all_messages.sort_by_key(|m| m.ts);
+    deduplicate_messages(&mut all_messages);
+    log_fn(format!("Всего уникальных сообщений (начальная выборка): {}", all_messages.len()));
 
-    // Deduplicate
-    let mut seen_ids = HashSet::new();
-    let mut unique_messages = Vec::with_capacity(all_messages.len());
-    for msg in all_messages {
-        let key = if !msg.id.is_empty() {
-            format!("id:{}", msg.id)
-        } else {
-            format!("c:{}:{}:{}", msg.ts, msg.user, msg.text)
-        };
-        if seen_ids.insert(key) {
-            unique_messages.push(msg);
+    // Probe video durations once upfront (used both for midnight span detection and for parts manifest)
+    let mut total_video_duration_ms = 0i64;
+    let mut probed_durations: Vec<Option<i64>> = Vec::with_capacity(params.video_paths.len());
+    if !params.video_paths.is_empty() {
+        log_fn(format!("Анализ видеофайлов ({}) с помощью ffprobe...", params.video_paths.len()));
+        for (i, vp) in params.video_paths.iter().enumerate() {
+            let canonical = vp.canonicalize().unwrap_or_else(|_| vp.clone());
+            let dur = probe_video_duration_ms(&canonical, Some(&params.ffmpeg_path));
+            if let Some(d) = dur {
+                total_video_duration_ms += d;
+                log_fn(format!(
+                    "  [Видео {}] {} -> длительность {:.1} с",
+                    i + 1,
+                    canonical.file_name().unwrap_or_default().to_string_lossy(),
+                    d as f64 / 1000.0
+                ));
+            } else {
+                log_fn(format!(
+                    "  [Видео {}] {} -> длительность не определена",
+                    i + 1,
+                    canonical.file_name().unwrap_or_default().to_string_lossy()
+                ));
+            }
+            probed_durations.push(dur);
         }
     }
-    all_messages = unique_messages;
 
-    log_fn(format!("Всего уникальных сообщений: {}", all_messages.len()));
-
-    // Discover room_id
-    let room_id = all_messages
-        .iter()
-        .find(|m| !m.room_id.is_empty())
-        .map(|m| m.room_id.clone());
-
-    if let Some(rid) = &room_id {
-        log_fn(format!("Определен room_id канала: {}", rid));
-    }
-
-    // Determine session start
+    // Determine initial session start
     let target_date = params.dates.first().copied();
     let (mut session_start_ms, mut detection_info) = if let Some(st) = params.start_dt {
         (st.timestamp_millis(), "Указано ручное время старта".to_string())
@@ -658,9 +755,137 @@ pub async fn run_import_task<F: Fn(String) + Send + 'static>(
         }
     }
 
+    // --- AUTO-DETECT NEXT DAY(S) WHEN STREAM CROSSES MIDNIGHT UTC ---
+    let mut added_extra_days = false;
+
+    // 1. Check by total video duration (session_start_ms .. session_start_ms + total_video_duration_ms)
+    if total_video_duration_ms > 0 {
+        let session_end_ms = session_start_ms + total_video_duration_ms;
+        if let (Some(start_dt), Some(end_dt)) = (
+            DateTime::from_timestamp_millis(session_start_ms),
+            DateTime::from_timestamp_millis(session_end_ms),
+        ) {
+            let mut cur_date = start_dt.date_naive();
+            let end_date = end_dt.date_naive();
+            while cur_date <= end_date {
+                if attempted_dates.insert(cur_date) {
+                    let y = cur_date.format("%Y").to_string();
+                    let m = cur_date.format("%m").to_string();
+                    let d = cur_date.format("%d").to_string();
+                    log_fn(format!(
+                        "Видео переходит через полночь UTC -> догрузка чата за {}...",
+                        cur_date
+                    ));
+                    match fetch_day_log(&client, &channel, &y, &m, &d).await {
+                        Ok(content) => {
+                            day_sources.push((format!("{}-{}-{}", y, m, d), content));
+                            added_extra_days = true;
+                        }
+                        Err(e) => log_fn(format!("Предупреждение при догрузке {}: {}", cur_date, e)),
+                    }
+                }
+                match cur_date.succ_opt() {
+                    Some(next) => cur_date = next,
+                    None => break,
+                }
+            }
+        }
+    }
+
+    if added_extra_days {
+        all_messages = extract_and_normalize_messages(&day_sources);
+        deduplicate_messages(&mut all_messages);
+    }
+
+    // 2. Check by chat activity near midnight (23:30:00..23:59:59 UTC) even if ffprobe is unavailable
+    for _ in 0..5 {
+        let last_msg_ts = match all_messages.last() {
+            Some(m) => m.ts,
+            None => break,
+        };
+        let last_dt = match DateTime::from_timestamp_millis(last_msg_ts) {
+            Some(dt) => dt,
+            None => break,
+        };
+
+        let near_midnight = last_dt.time() >= chrono::NaiveTime::from_hms_opt(23, 30, 0).unwrap();
+        if !near_midnight {
+            break;
+        }
+
+        let next_date = match last_dt.date_naive().succ_opt() {
+            Some(nd) => nd,
+            None => break,
+        };
+
+        if !attempted_dates.insert(next_date) {
+            break;
+        }
+
+        let y = next_date.format("%Y").to_string();
+        let m = next_date.format("%m").to_string();
+        let d = next_date.format("%d").to_string();
+        log_fn(format!(
+            "Активность чата у полуночи ({} UTC) -> проверка продолжения стрима за {}...",
+            last_dt.format("%H:%M:%S"),
+            next_date
+        ));
+
+        match fetch_day_log(&client, &channel, &y, &m, &d).await {
+            Ok(content) => {
+                let date_key = format!("{}-{}-{}", y, m, d);
+                let next_msgs = extract_and_normalize_messages(&[(date_key.clone(), content.clone())]);
+                if let Some(first_next) = next_msgs.iter().min_by_key(|msg| msg.ts) {
+                    if is_midnight_continuation(last_msg_ts, first_next.ts, next_date) {
+                        log_fn(format!(
+                            "Обнаружено продолжение стрима после 00:00 UTC ({}): +{} сообщений",
+                            next_date,
+                            next_msgs.len()
+                        ));
+                        day_sources.push((date_key, content));
+                        all_messages.extend(next_msgs);
+                        deduplicate_messages(&mut all_messages);
+                        added_extra_days = true;
+                        continue;
+                    } else {
+                        log_fn(format!(
+                            "В архиве за {} нет ночного продолжения стрима (первое сообщение слишком поздно), пропуск.",
+                            next_date
+                        ));
+                    }
+                }
+                break;
+            }
+            Err(_) => break,
+        }
+    }
+
+    // Keep day_sources sorted chronologically by YYYY-MM-DD key
+    day_sources.sort_by(|a, b| a.0.cmp(&b.0));
+
+    if added_extra_days {
+        log_fn(format!(
+            "Итого после объединения всех суток: {} уникальных сообщений",
+            all_messages.len()
+        ));
+    }
+
+    let session_start_dt = DateTime::from_timestamp_millis(session_start_ms)
+        .unwrap_or_else(Utc::now);
+
+    // Discover room_id across all merged days
+    let room_id = all_messages
+        .iter()
+        .find(|m| !m.room_id.is_empty())
+        .map(|m| m.room_id.clone());
+
+    if let Some(rid) = &room_id {
+        log_fn(format!("Определен room_id канала: {}", rid));
+    }
+
     log_fn(format!("[Старт] {}", detection_info));
 
-    // Probe video parts
+    // Build video parts manifest using already-probed durations
     let mut parts_json = Vec::new();
     let mut offsets_map = serde_json::Map::new();
 
@@ -676,61 +901,39 @@ pub async fn run_import_task<F: Fn(String) + Send + 'static>(
     }
 
     let mut cursor = session_start_ms;
-    let mut _total_video_duration_ms = 0i64;
-    let mut _has_video_durations = false;
-
-    if !params.video_paths.is_empty() {
-        log_fn(format!("Анализ видеофайлов ({}) с помощью ffprobe...", params.video_paths.len()));
-        for (i, vp) in params.video_paths.iter().enumerate() {
-            let canonical = vp.canonicalize().unwrap_or_else(|_| vp.clone());
-            let file_str = if let Ok(rel) = vp.strip_prefix(&session_dir) {
-                rel.to_string_lossy().replace('\\', "/")
-            } else if let Ok(canon_vp) = vp.canonicalize() {
-                if let Ok(canon_sess) = session_dir.canonicalize() {
-                    if let Ok(rel) = canon_vp.strip_prefix(&canon_sess) {
-                        rel.to_string_lossy().replace('\\', "/")
-                    } else {
-                        canonical.to_string_lossy().to_string()
-                    }
+    for (i, vp) in params.video_paths.iter().enumerate() {
+        let canonical = vp.canonicalize().unwrap_or_else(|_| vp.clone());
+        let file_str = if let Ok(rel) = vp.strip_prefix(&session_dir) {
+            rel.to_string_lossy().replace('\\', "/")
+        } else if let Ok(canon_vp) = vp.canonicalize() {
+            if let Ok(canon_sess) = session_dir.canonicalize() {
+                if let Ok(rel) = canon_vp.strip_prefix(&canon_sess) {
+                    rel.to_string_lossy().replace('\\', "/")
                 } else {
                     canonical.to_string_lossy().to_string()
                 }
             } else {
-                vp.file_name().map(|n| n.to_string_lossy().to_string()).unwrap_or_else(|| canonical.to_string_lossy().to_string())
-            };
-
-            let duration = probe_video_duration_ms(&canonical);
-
-            let end_ms = if let Some(dur) = duration {
-                _total_video_duration_ms += dur;
-                _has_video_durations = true;
-                log_fn(format!(
-                    "  [Видео {}] {} -> длительность {:.1} с",
-                    i + 1,
-                    canonical.file_name().unwrap_or_default().to_string_lossy(),
-                    dur as f64 / 1000.0
-                ));
-                Some(cursor + dur)
-            } else {
-                log_fn(format!(
-                    "  [Видео {}] {} -> длительность не определена",
-                    i + 1,
-                    canonical.file_name().unwrap_or_default().to_string_lossy()
-                ));
-                None
-            };
-
-            parts_json.push(json!({
-                "file": file_str,
-                "start_ms": cursor,
-                "end_ms": end_ms,
-            }));
-
-            offsets_map.entry(file_str).or_insert(json!(0));
-
-            if let Some(end) = end_ms {
-                cursor = end;
+                canonical.to_string_lossy().to_string()
             }
+        } else {
+            vp.file_name()
+                .map(|n| n.to_string_lossy().to_string())
+                .unwrap_or_else(|| canonical.to_string_lossy().to_string())
+        };
+
+        let duration = probed_durations.get(i).copied().flatten();
+        let end_ms = duration.map(|dur| cursor + dur);
+
+        parts_json.push(json!({
+            "file": file_str,
+            "start_ms": cursor,
+            "end_ms": end_ms,
+        }));
+
+        offsets_map.entry(file_str).or_insert(json!(0));
+
+        if let Some(end) = end_ms {
+            cursor = end;
         }
     }
 
@@ -795,4 +998,50 @@ pub async fn run_import_task<F: Fn(String) + Send + 'static>(
     ));
 
     Ok(session_dir)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_parse_ffmpeg_stderr_duration() {
+        let sample = "  Duration: 08:15:30.50, start: 0.000000, bitrate: 6123 kb/s";
+        assert_eq!(parse_ffmpeg_stderr_duration_ms(sample), Some(29_730_500));
+    }
+
+    #[test]
+    fn test_deduplicate_and_midnight_continuation() {
+        let d1 = NaiveDate::from_ymd_opt(2026, 11, 13).unwrap();
+        let d2 = NaiveDate::from_ymd_opt(2026, 11, 14).unwrap();
+        let ts_23_59 = d1.and_hms_opt(23, 59, 50).unwrap().and_utc().timestamp_millis();
+        let ts_00_00 = d2.and_hms_opt(0, 0, 12).unwrap().and_utc().timestamp_millis();
+        let ts_14_00 = d2.and_hms_opt(14, 0, 0).unwrap().and_utc().timestamp_millis();
+
+        assert!(is_midnight_continuation(ts_23_59, ts_00_00, d2));
+        assert!(!is_midnight_continuation(ts_23_59, ts_14_00, d2));
+
+        let day1_json = json!({
+            "messages": [
+                { "id": "m1", "timestamp": "2026-11-13T23:59:50Z", "user": "alice", "text": "before midnight" },
+                { "id": "m2", "timestamp": "2026-11-14T00:00:00Z", "user": "bob", "text": "midnight boundary" }
+            ]
+        });
+        let day2_json = json!({
+            "messages": [
+                { "id": "m2", "timestamp": "2026-11-14T00:00:00Z", "user": "bob", "text": "midnight boundary" },
+                { "id": "m3", "timestamp": "2026-11-14T00:00:12Z", "user": "charlie", "text": "after midnight" }
+            ]
+        });
+
+        let mut msgs = extract_and_normalize_messages(&[
+            ("2026-11-13".to_string(), day1_json),
+            ("2026-11-14".to_string(), day2_json),
+        ]);
+        deduplicate_messages(&mut msgs);
+        assert_eq!(msgs.len(), 3);
+        assert_eq!(msgs[0].id, "m1");
+        assert_eq!(msgs[1].id, "m2");
+        assert_eq!(msgs[2].id, "m3");
+    }
 }

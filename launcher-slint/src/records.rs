@@ -55,44 +55,48 @@ pub fn parse_channel_from_folder(folder_name: &str) -> (String, Option<NaiveDate
     static RE_YMD_DASH: OnceLock<Regex> = OnceLock::new();
     static RE_DMY_DASH: OnceLock<Regex> = OnceLock::new();
 
-    // 1. DD-MM-YYYY_HH-MM-SS (e.g. channel_04-11-2026_15-00-16)
+    // 1. DD-MM-YYYY[T_ ]HH[-:]MM[-:]SS (e.g. channel_04-11-2026_15-00-16 or channel_04-11-2026 15-00-16_title)
     let re1 = RE_DMY_HMS.get_or_init(|| {
-        Regex::new(r"^(.*)_(\d{2}-\d{2}-\d{4}_\d{2}-\d{2}-\d{2})(?:_.*)?$").unwrap()
+        Regex::new(r"^(.*?)_(\d{2}-\d{2}-\d{4}[T_ ]\d{2}[-:]\d{2}[-:]\d{2})(?:[ _].*)?$").unwrap()
     });
     if let Some(caps) = re1.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
         let ts_str = caps.get(2).unwrap().as_str();
-        if let Ok(dt) = NaiveDateTime::parse_from_str(ts_str, "%d-%m-%Y_%H-%M-%S") {
+        let normalized = ts_str.replace(['T', ' '], "_").replace(':', "-");
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%d-%m-%Y_%H-%M-%S") {
             return (channel, Some(dt));
         }
     }
 
-    // 2. YYYYMMDD_HHMMSS (Streamlink default, e.g. channel_20261009_225318)
-    let re2 = RE_YMD_COMPACT_HMS
-        .get_or_init(|| Regex::new(r"^(.*)_(\d{8}_\d{6})(?:_.*)?$").unwrap());
+    // 2. YYYYMMDD[T_ ]HHMMSS (Streamlink default, e.g. channel_20261009_225318)
+    let re2 = RE_YMD_COMPACT_HMS.get_or_init(|| {
+        Regex::new(r"^(.*?)_(\d{8}[T_ ]\d{6})(?:[ _].*)?$").unwrap()
+    });
     if let Some(caps) = re2.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
-        let ts_str = caps.get(2).unwrap().as_str();
-        if let Ok(dt) = NaiveDateTime::parse_from_str(ts_str, "%Y%m%d_%H%M%S") {
+        let ts_str = caps.get(2).unwrap().as_str().replace(['T', ' '], "_");
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&ts_str, "%Y%m%d_%H%M%S") {
             return (channel, Some(dt));
         }
     }
 
-    // 3. YYYY-MM-DD_HH-MM-SS or with T / colons (e.g. channel_2026-10-09_22-53-18)
+    // 3. YYYY-MM-DD[T_ ]HH[-:]MM[-:]SS (e.g. channel_2026-10-09_22-53-18 or channel_2026-10-09 22-53-18_720p)
     let re3 = RE_YMD_ISO_HMS.get_or_init(|| {
-        Regex::new(r"^(.*)_(\d{4}-\d{2}-\d{2}[T_]\d{2}[-:]\d{2}[-:]\d{2})(?:_.*)?$").unwrap()
+        Regex::new(r"^(.*?)_(\d{4}-\d{2}-\d{2}[T_ ]\d{2}[-:]\d{2}[-:]\d{2})(?:[ _].*)?$").unwrap()
     });
     if let Some(caps) = re3.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
         let ts_str = caps.get(2).unwrap().as_str();
-        let normalized = ts_str.replace('T', "_").replace(':', "-");
+        let normalized = ts_str.replace(['T', ' '], "_").replace(':', "-");
         if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d_%H-%M-%S") {
             return (channel, Some(dt));
         }
     }
 
     // 4. YYYYMMDD (Date only, e.g. channel_20261009)
-    let re4 = RE_YMD_COMPACT.get_or_init(|| Regex::new(r"^(.*)_(\d{8})(?:_.*)?$").unwrap());
+    let re4 = RE_YMD_COMPACT.get_or_init(|| {
+        Regex::new(r"^(.*?)_(\d{8})(?:[ _].*)?$").unwrap()
+    });
     if let Some(caps) = re4.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
         let date_str = caps.get(2).unwrap().as_str();
@@ -104,8 +108,9 @@ pub fn parse_channel_from_folder(folder_name: &str) -> (String, Option<NaiveDate
     }
 
     // 5. YYYY-MM-DD (Date only, e.g. channel_2026-10-09)
-    let re5 = RE_YMD_DASH
-        .get_or_init(|| Regex::new(r"^(.*)_(\d{4}-\d{2}-\d{2})(?:_.*)?$").unwrap());
+    let re5 = RE_YMD_DASH.get_or_init(|| {
+        Regex::new(r"^(.*?)_(\d{4}-\d{2}-\d{2})(?:[ _].*)?$").unwrap()
+    });
     if let Some(caps) = re5.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
         let date_str = caps.get(2).unwrap().as_str();
@@ -117,8 +122,9 @@ pub fn parse_channel_from_folder(folder_name: &str) -> (String, Option<NaiveDate
     }
 
     // 6. DD-MM-YYYY (Date only, e.g. channel_09-10-2026)
-    let re6 = RE_DMY_DASH
-        .get_or_init(|| Regex::new(r"^(.*)_(\d{2}-\d{2}-\d{4})(?:_.*)?$").unwrap());
+    let re6 = RE_DMY_DASH.get_or_init(|| {
+        Regex::new(r"^(.*?)_(\d{2}-\d{2}-\d{4})(?:[ _].*)?$").unwrap()
+    });
     if let Some(caps) = re6.captures(folder_name) {
         let channel = caps.get(1).unwrap().as_str().trim().trim_start_matches('#').to_string();
         let date_str = caps.get(2).unwrap().as_str();
@@ -132,13 +138,134 @@ pub fn parse_channel_from_folder(folder_name: &str) -> (String, Option<NaiveDate
     (folder_name.to_string(), None)
 }
 
+fn parse_standalone_datetime(text: &str) -> Option<NaiveDateTime> {
+    static RE_STANDALONE_YMD_HMS: OnceLock<Regex> = OnceLock::new();
+    static RE_STANDALONE_DMY_HMS: OnceLock<Regex> = OnceLock::new();
+    static RE_STANDALONE_COMPACT_HMS: OnceLock<Regex> = OnceLock::new();
+    static RE_STANDALONE_YMD: OnceLock<Regex> = OnceLock::new();
+    static RE_STANDALONE_DMY: OnceLock<Regex> = OnceLock::new();
+
+    let re_ymd_hms = RE_STANDALONE_YMD_HMS.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d])(\d{4}-\d{2}-\d{2}[T_ ]\d{2}[-:]\d{2}[-:]\d{2})(?:$|[^\d])").unwrap()
+    });
+    if let Some(caps) = re_ymd_hms.captures(text) {
+        let normalized = caps.get(1).unwrap().as_str().replace(['T', ' '], "_").replace(':', "-");
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%Y-%m-%d_%H-%M-%S") {
+            return Some(dt);
+        }
+    }
+
+    let re_dmy_hms = RE_STANDALONE_DMY_HMS.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d])(\d{2}-\d{2}-\d{4}[T_ ]\d{2}[-:]\d{2}[-:]\d{2})(?:$|[^\d])").unwrap()
+    });
+    if let Some(caps) = re_dmy_hms.captures(text) {
+        let normalized = caps.get(1).unwrap().as_str().replace(['T', ' '], "_").replace(':', "-");
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%d-%m-%Y_%H-%M-%S") {
+            return Some(dt);
+        }
+    }
+
+    let re_compact_hms = RE_STANDALONE_COMPACT_HMS.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d])(\d{8}[T_ ]\d{6})(?:$|[^\d])").unwrap()
+    });
+    if let Some(caps) = re_compact_hms.captures(text) {
+        let normalized = caps.get(1).unwrap().as_str().replace(['T', ' '], "_");
+        if let Ok(dt) = NaiveDateTime::parse_from_str(&normalized, "%Y%m%d_%H%M%S") {
+            return Some(dt);
+        }
+    }
+
+    let re_ymd = RE_STANDALONE_YMD.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d])(\d{4}-\d{2}-\d{2})(?:$|[^\d])").unwrap()
+    });
+    if let Some(caps) = re_ymd.captures(text) {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(caps.get(1).unwrap().as_str(), "%Y-%m-%d") {
+            if let Some(dt) = d.and_hms_opt(0, 0, 0) {
+                return Some(dt);
+            }
+        }
+    }
+
+    let re_dmy = RE_STANDALONE_DMY.get_or_init(|| {
+        Regex::new(r"(?:^|[^\d])(\d{2}-\d{2}-\d{4})(?:$|[^\d])").unwrap()
+    });
+    if let Some(caps) = re_dmy.captures(text) {
+        if let Ok(d) = chrono::NaiveDate::parse_from_str(caps.get(1).unwrap().as_str(), "%d-%m-%Y") {
+            if let Some(dt) = d.and_hms_opt(0, 0, 0) {
+                return Some(dt);
+            }
+        }
+    }
+
+    None
+}
+
+pub fn detect_date_from_file_or_stem(video_path: &Path) -> Option<chrono::NaiveDate> {
+    // 1. Prioritize file stem so individual video parts (e.g. Day 2 part inside Day 1 folder) keep their own date
+    if let Some(stem) = video_path.file_stem().and_then(|n| n.to_str()) {
+        let (ch, dt_opt) = parse_channel_from_folder(stem);
+        if let Some(dt) = dt_opt {
+            if !ch.is_empty() && ch != stem {
+                return Some(dt.date());
+            }
+        }
+        if let Some(dt) = parse_standalone_datetime(stem) {
+            return Some(dt.date());
+        }
+    }
+
+    // 2. Fallback to parent folder or session.json
+    if let Some(parent) = video_path.parent() {
+        let folder_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let (ch, dt_opt) = parse_channel_from_folder(folder_name);
+        if let Some(dt) = dt_opt {
+            if !ch.is_empty() && ch != folder_name {
+                return Some(dt.date());
+            }
+        }
+        if let Some(dt) = parse_standalone_datetime(folder_name) {
+            return Some(dt.date());
+        }
+
+        let session_file = parent.join(format!("{}.session.json", folder_name));
+        if session_file.is_file() {
+            if let Ok(content) = fs::read_to_string(&session_file) {
+                if let Ok(val) = serde_json::from_str::<Value>(&content) {
+                    if let Some(dt) = val
+                        .get("session_start_ms")
+                        .and_then(|v| v.as_i64())
+                        .and_then(chrono::DateTime::from_timestamp_millis)
+                    {
+                        return Some(dt.naive_utc().date());
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 pub fn detect_channel_and_date(video_path: &Path) -> (Option<String>, Option<NaiveDateTime>) {
+    let stem_parsed = video_path
+        .file_stem()
+        .and_then(|n| n.to_str())
+        .and_then(|stem| {
+            let (ch, dt) = parse_channel_from_folder(stem);
+            if dt.is_some() && !ch.is_empty() && ch != stem {
+                Some((Some(ch), dt))
+            } else {
+                parse_standalone_datetime(stem).map(|dt| (None, Some(dt)))
+            }
+        });
+
     // 1. Try parent folder name
     if let Some(parent) = video_path.parent() {
         let folder_name = parent.file_name().and_then(|n| n.to_str()).unwrap_or("");
         let (ch, dt) = parse_channel_from_folder(folder_name);
         if dt.is_some() && !ch.is_empty() && ch != folder_name {
-            return (Some(ch), dt);
+            let best_dt = stem_parsed.as_ref().and_then(|(_, s_dt)| *s_dt).or(dt);
+            return (Some(ch), best_dt);
         }
 
         // Try reading session.json in parent folder if present
@@ -152,7 +279,8 @@ pub fn detect_channel_and_date(video_path: &Path) -> (Option<String>, Option<Nai
                         .and_then(chrono::DateTime::from_timestamp_millis)
                         .map(|dt| dt.naive_utc());
                     if ch_opt.is_some() || dt_opt.is_some() {
-                        return (ch_opt, dt_opt);
+                        let best_dt = stem_parsed.as_ref().and_then(|(_, s_dt)| *s_dt).or(dt_opt);
+                        return (ch_opt, best_dt);
                     }
                 }
             }
@@ -160,10 +288,9 @@ pub fn detect_channel_and_date(video_path: &Path) -> (Option<String>, Option<Nai
     }
 
     // 2. Try video file stem
-    if let Some(stem) = video_path.file_stem().and_then(|n| n.to_str()) {
-        let (ch, dt) = parse_channel_from_folder(stem);
-        if dt.is_some() && !ch.is_empty() && ch != stem {
-            return (Some(ch), dt);
+    if let Some((ch_opt, dt_opt)) = stem_parsed {
+        if ch_opt.is_some() || dt_opt.is_some() {
+            return (ch_opt, dt_opt);
         }
     }
 
@@ -331,10 +458,32 @@ mod tests {
         let dt = dt.unwrap();
         assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-11-04 15:00:16");
 
+        // Format with space between date and time + resolution and title suffix
+        let (ch, dt) = parse_channel_from_folder("nerixane_2026-11-13 16-18-14_720p_Stream Title");
+        assert_eq!(ch, "nerixane");
+        let dt = dt.unwrap();
+        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-11-13 16:18:14");
+
+        // Channel with underscore + space-separated timestamp
+        let (ch, dt) = parse_channel_from_folder("cool_streamer_2026-11-14 00-45-22");
+        assert_eq!(ch, "cool_streamer");
+        let dt = dt.unwrap();
+        assert_eq!(dt.format("%Y-%m-%d %H:%M:%S").to_string(), "2026-11-14 00:45:22");
+
         // Format with file extension: channel_20261009_225318.mp4
         let (ch, dt) = detect_channel_and_date(Path::new("D:/other_disk/streamer_20261009_225318.mp4"));
         assert_eq!(ch.as_deref(), Some("streamer"));
         let dt = dt.unwrap();
         assert_eq!(dt.format("%Y-%m-%d").to_string(), "2026-10-09");
+
+        // Day 2 part inside a Day 1 session folder preserves Day 2 date via detect_date_from_file_or_stem
+        let day2_part = Path::new("D:/records/nerixane_13-11-2026_16-18-14/nerixane_2026-11-14 00-45-22.mp4");
+        let detected_date = detect_date_from_file_or_stem(day2_part).unwrap();
+        assert_eq!(detected_date.format("%Y-%m-%d").to_string(), "2026-11-14");
+
+        // Standalone timestamp filename without channel prefix inside a Day 1 session folder
+        let standalone_part = Path::new("D:/records/nerixane_13-11-2026_16-18-14/2026-11-14 00-45-22.mp4");
+        let detected_standalone = detect_date_from_file_or_stem(standalone_part).unwrap();
+        assert_eq!(detected_standalone.format("%Y-%m-%d").to_string(), "2026-11-14");
     }
 }
